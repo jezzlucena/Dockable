@@ -1,0 +1,269 @@
+<Window x:Class="Dockable.DockWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Dockable.ViewModels"
+        xmlns:conv="clr-namespace:Dockable.Converters"
+        Title="Dockable"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ResizeMode="NoResize"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        AllowDrop="True"
+        DragOver="OnDragOver"
+        Drop="OnDrop">
+
+    <Window.Resources>
+        <conv:BoolToVisibilityConverter x:Key="BoolToVis" />
+        <conv:FallbackVisibilityConverter x:Key="FallbackVis" />
+        <conv:LabelOpenConverter x:Key="LabelOpen" />
+        <conv:AllTrueToVisibilityConverter x:Key="AllTrueToVis" />
+
+        <!-- Theme brushes (light defaults; ApplyTheme() swaps these at runtime for light/dark). -->
+        <SolidColorBrush x:Key="BarBackgroundBrush" Color="#66FFFFFF" />
+        <SolidColorBrush x:Key="BarBorderBrush" Color="#33FFFFFF" />
+        <SolidColorBrush x:Key="SeparatorBrush" Color="#33000000" />
+        <SolidColorBrush x:Key="RunningDotBrush" Color="#B3000000" />
+        <SolidColorBrush x:Key="FallbackBgBrush" Color="#1F000000" />
+        <SolidColorBrush x:Key="FallbackTextBrush" Color="#CC000000" />
+
+        <!-- One dock entry: Start logo for the Start item, otherwise an extracted icon.
+             The container is sized/positioned by the layout engine (Width/Height/Canvas.Left/Top). -->
+        <DataTemplate x:Key="DockItemTemplate" DataType="{x:Type vm:DockItemViewModel}">
+            <Grid x:Name="ItemRoot"
+                  Background="Transparent"
+                  PreviewMouseLeftButtonDown="DockItem_PreviewMouseDown"
+                  MouseLeftButtonUp="DockItem_Click"
+                  MouseEnter="DockItem_MouseEnter">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <!-- Separators show a vertical-resize cursor (drag them to resize the dock). -->
+                        <Setter Property="Cursor" Value="Hand" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsSeparator}" Value="True">
+                                <Setter Property="Cursor" Value="SizeNS" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Grid.Style>
+                <Grid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Unpin" Click="UnpinItem_Click" IsEnabled="{Binding CanUnpin}"
+                                  Visibility="{Binding IsSeparator, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}" />
+                        <MenuItem Header="Dock Preferences…" Click="OpenDockPreferences_Click"
+                                  Visibility="{Binding IsSeparator, Converter={StaticResource BoolToVis}}" />
+                    </ContextMenu>
+                </Grid.ContextMenu>
+
+                <!-- Windows Start logo: four tiles -->
+                <Viewbox Visibility="{Binding IsStartMenu, Converter={StaticResource BoolToVis}}">
+                    <Grid Width="20" Height="20">
+                        <Grid.RowDefinitions>
+                            <RowDefinition /><RowDefinition />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition /><ColumnDefinition />
+                        </Grid.ColumnDefinitions>
+                        <Rectangle Grid.Row="0" Grid.Column="0" Fill="#FF50B0F0" Margin="0,0,1.2,1.2" />
+                        <Rectangle Grid.Row="0" Grid.Column="1" Fill="#FF50B0F0" Margin="1.2,0,0,1.2" />
+                        <Rectangle Grid.Row="1" Grid.Column="0" Fill="#FF50B0F0" Margin="0,1.2,1.2,0" />
+                        <Rectangle Grid.Row="1" Grid.Column="1" Fill="#FF50B0F0" Margin="1.2,1.2,0,0" />
+                    </Grid>
+                </Viewbox>
+
+                <!-- Separator divider between shortcuts and minimized-window tiles -->
+                <Rectangle Width="2"
+                           HorizontalAlignment="Center"
+                           RadiusX="1" RadiusY="1"
+                           Fill="{DynamicResource SeparatorBrush}"
+                           Visibility="{Binding IsSeparator, Converter={StaticResource BoolToVis}}" />
+
+                <!-- Extracted icon (shortcuts) or window thumbnail (minimized tiles).
+                     Two stacked drop-shadows (WPF allows one effect per element, so they're nested):
+                     outer = 0 10 20 / 0.12, inner = 0 4 8 / 0.18. -->
+                <Grid Visibility="{Binding ShowIconArea, Converter={StaticResource BoolToVis}}">
+                    <Grid.Effect>
+                        <DropShadowEffect BlurRadius="20" ShadowDepth="10" Direction="270" Opacity="0.12" Color="#000000" />
+                    </Grid.Effect>
+                    <Image Source="{Binding Icon}"
+                           Stretch="Uniform"
+                           RenderOptions.BitmapScalingMode="HighQuality">
+                        <Image.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="4" Direction="270" Opacity="0.18" Color="#000000" />
+                        </Image.Effect>
+                    </Image>
+                </Grid>
+
+                <!-- Fallback while a shortcut icon is still loading -->
+                <Border CornerRadius="10" Background="{DynamicResource FallbackBgBrush}">
+                    <Border.Visibility>
+                        <MultiBinding Converter="{StaticResource FallbackVis}">
+                            <Binding Path="ShowIconArea" />
+                            <Binding Path="Icon" />
+                        </MultiBinding>
+                    </Border.Visibility>
+                    <TextBlock Text="{Binding DisplayName}"
+                               Foreground="{DynamicResource FallbackTextBrush}"
+                               FontSize="11"
+                               TextAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center"
+                               Margin="2" />
+                </Border>
+
+                <!-- App-icon badge on the bottom-right of a minimized-window thumbnail -->
+                <Image Source="{Binding OverlayIcon}"
+                       Width="20" Height="20"
+                       HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                       Margin="0,0,1,1"
+                       Stretch="Uniform"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       Visibility="{Binding ShowOverlayIcon, Converter={StaticResource BoolToVis}}">
+                    <Image.Effect>
+                        <DropShadowEffect BlurRadius="4" ShadowDepth="0" Opacity="0.7" Color="#000000" />
+                    </Image.Effect>
+                </Image>
+
+                <!-- Running indicator: a dot just below the icon for open taskbar apps -->
+                <Ellipse Width="4" Height="4"
+                         VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                         Margin="0,0,0,-10"
+                         Fill="{DynamicResource RunningDotBrush}">
+                    <Ellipse.Visibility>
+                        <MultiBinding Converter="{StaticResource AllTrueToVis}">
+                            <Binding Path="IsRunning" />
+                            <Binding Path="DataContext.ShowRunningIndicators"
+                                     RelativeSource="{RelativeSource AncestorType=Window}" />
+                        </MultiBinding>
+                    </Ellipse.Visibility>
+                </Ellipse>
+
+                <!-- The hover label is a single shared popup (see RootCanvas) positioned per-frame,
+                     not a per-item popup, so it can track the magnified icon's center smoothly. -->
+            </Grid>
+        </DataTemplate>
+
+        <!-- Each item container is absolutely positioned and sized by the layout engine. -->
+        <Style x:Key="DockItemContainerStyle" TargetType="ContentPresenter">
+            <Setter Property="Canvas.Left" Value="{Binding X}" />
+            <Setter Property="Canvas.Top" Value="{Binding Y}" />
+            <Setter Property="Width" Value="{Binding RenderWidth}" />
+            <Setter Property="Height" Value="{Binding RenderSize}" />
+            <Style.Triggers>
+                <!-- While dragging, the in-canvas tile is hidden; the floating ghost popup
+                     (which can roam outside the dock window) represents it. The slot stays
+                     reserved as a gap so the others part. -->
+                <DataTrigger Binding="{Binding IsDragging}" Value="True">
+                    <Setter Property="Panel.ZIndex" Value="1000" />
+                    <Setter Property="Opacity" Value="0" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Canvas x:Name="RootCanvas">
+        <!-- Translucent "glass" dock bar (rounded, widens with magnification). True backdrop
+             blur is a follow-up; this dark-glass styling is the v1 look. -->
+        <Border x:Name="DockBackground"
+                Canvas.Left="{Binding BarLeft}"
+                Canvas.Top="{Binding BarTop}"
+                Width="{Binding BarWidth}"
+                Height="{Binding BarHeight}"
+                CornerRadius="24"
+                BorderBrush="{DynamicResource BarBorderBrush}"
+                BorderThickness="1"
+                Background="{DynamicResource BarBackgroundBrush}">
+            <Border.Effect>
+                <!-- box-shadow: 0 10px 30px rgba(0,0,0,0.15) light / 0.4 dark (Opacity set in ApplyTheme) -->
+                <DropShadowEffect x:Name="BarShadow" BlurRadius="30" ShadowDepth="10" Direction="270" Opacity="0.15" Color="#000000" />
+            </Border.Effect>
+        </Border>
+
+        <ItemsControl ItemsSource="{Binding Items}"
+                      ItemTemplate="{StaticResource DockItemTemplate}"
+                      ItemContainerStyle="{StaticResource DockItemContainerStyle}"
+                      Width="{Binding WindowWidth}"
+                      Height="{Binding WindowHeight}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <Canvas />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+        </ItemsControl>
+
+        <!-- Drag ghost: a top-level popup so a dragged icon can roam the whole screen, outside
+             the dock window's bounds. Position (HorizontalOffset/VerticalOffset relative to
+             RootCanvas) is driven from code as the cursor moves. Fixed geometry keeps the icon
+             centered on the cursor: width 160, a 42px reserved area above for the "Remove" tag,
+             then the 60px icon — so its center is always (80, 72) from the popup's top-left. -->
+        <Popup x:Name="DragGhost"
+               Placement="Relative"
+               PlacementTarget="{Binding ElementName=RootCanvas}"
+               AllowsTransparency="True"
+               StaysOpen="True"
+               PopupAnimation="None"
+               IsHitTestVisible="False"
+               IsOpen="False">
+            <StackPanel x:Name="GhostRoot" Width="160">
+                <!-- "Remove" tag (macOS-style balloon + downward arrow). Reserves its 42px row
+                     even when hidden, so arming it never shifts the icon. -->
+                <Grid Height="42">
+                    <StackPanel x:Name="GhostRemoveTag"
+                                VerticalAlignment="Bottom"
+                                HorizontalAlignment="Center"
+                                Visibility="Hidden">
+                        <Border CornerRadius="7"
+                                Padding="10,4"
+                                Background="#F0C0392B"
+                                BorderBrush="#55FFFFFF"
+                                BorderThickness="1">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.55" Color="#000000" />
+                            </Border.Effect>
+                            <TextBlock Text="Remove" Foreground="#FFFFFFFF" FontSize="12" FontWeight="SemiBold" />
+                        </Border>
+                        <Path HorizontalAlignment="Center" Margin="0,-1.5,0,0"
+                              Fill="#F0C0392B" Data="M 0,0 L 14,0 L 7,7 Z" />
+                    </StackPanel>
+                </Grid>
+
+                <Image x:Name="GhostIcon"
+                       Width="60" Height="60"
+                       Stretch="Uniform"
+                       RenderOptions.BitmapScalingMode="HighQuality">
+                    <Image.Effect>
+                        <DropShadowEffect BlurRadius="14" ShadowDepth="4" Opacity="0.5" Color="#000000" />
+                    </Image.Effect>
+                </Image>
+            </StackPanel>
+        </Popup>
+
+        <!-- Shared hover label: one popup, positioned per-frame (UpdateHoverLabel) centered above
+             the hovered icon at its fully-magnified height. Click-through so it never steals hover. -->
+        <Popup x:Name="LabelPopup"
+               Placement="Relative"
+               PlacementTarget="{Binding ElementName=RootCanvas}"
+               AllowsTransparency="True"
+               StaysOpen="True"
+               PopupAnimation="Fade"
+               IsHitTestVisible="False"
+               IsOpen="False"
+               Opened="LabelPopup_Opened">
+            <StackPanel Margin="10,10,10,0">
+                <Border CornerRadius="7" Padding="10,4"
+                        Background="#F02A2A30" BorderBrush="#33FFFFFF" BorderThickness="1">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.55" Color="#000000" />
+                    </Border.Effect>
+                    <TextBlock x:Name="LabelText" Foreground="#FFF2F2F2" FontSize="12"
+                               TextOptions.TextFormattingMode="Ideal" />
+                </Border>
+                <Path HorizontalAlignment="Center" Margin="0,-1.5,0,0"
+                      Fill="#F02A2A30" Data="M 0,0 L 14,0 L 7,7 Z" />
+            </StackPanel>
+        </Popup>
+    </Canvas>
+</Window>

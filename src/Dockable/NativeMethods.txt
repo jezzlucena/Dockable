@@ -1,0 +1,116 @@
+// --- Start menu (synthesize Win key) ---
+SendInput
+INPUT
+VIRTUAL_KEY
+
+// --- High-res icon / thumbnail extraction ---
+// IShellItemImageFactory::GetImage works directly on .exe/.lnk/documents and
+// returns a crisp HBITMAP we convert to a WPF BitmapSource.
+SHCreateItemFromParsingName
+IShellItemImageFactory
+SIIGBF
+DeleteObject
+GetObject
+DIBSECTION
+
+// --- Cursor / window helpers ---
+GetCursorPos
+SetWindowPos
+
+// --- Clip the dock window to the resting bar when idle (magnification overflow is click-through) ---
+CreateRectRgn
+SetWindowRgn
+
+// --- AppBar (reserve screen space / docking) ---
+SHAppBarMessage
+APPBARDATA
+ABM_NEW
+ABM_REMOVE
+ABM_QUERYPOS
+ABM_SETPOS
+ABM_ACTIVATE
+ABM_WINDOWPOSCHANGED
+ABM_GETSTATE
+ABM_SETSTATE
+ABE_BOTTOM
+ABE_TOP
+ABE_LEFT
+ABE_RIGHT
+ABN_POSCHANGED
+ABN_FULLSCREENAPP
+ABN_STATECHANGE
+
+// --- Taskbar hide/show ---
+FindWindow
+EnumWindows
+GetClassName
+
+// --- Taskbar app mirroring (enumerate taskbar-eligible app windows) ---
+GetWindow
+GET_WINDOW_CMD
+DwmGetWindowAttribute
+GetWindowText
+
+// --- Recycle Bin state (empty vs. full, to refresh its dynamic icon) ---
+SHQueryRecycleBin
+
+// --- Send dropped files/folders to the Recycle Bin ---
+SHFileOperation
+
+// --- Taskbar pin order (resolve PIDLs from the Taskband\Favorites registry blob) ---
+SHGetPathFromIDList
+
+// --- Match running windows to pins by AppUserModelID ---
+SHGetPropertyStoreForWindow
+IPropertyStore
+PROPERTYKEY
+PROPVARIANT
+PropVariantToString
+PropVariantClear
+PKEY_AppUserModel_ID
+
+// --- Multi-monitor + per-monitor DPI ---
+MonitorFromWindow
+GetMonitorInfo
+MONITORINFO
+GetDpiForWindow
+
+// --- Genie effect: window capture + trigger ---
+PrintWindow
+GetForegroundWindow
+GetWindowRect
+ShowWindow
+IsIconic
+RegisterHotKey
+UnregisterHotKey
+HOT_KEY_MODIFIERS
+GetDC
+ReleaseDC
+CreateCompatibleDC
+DeleteDC
+CreateDIBSection
+BITMAPINFO
+SelectObject
+BitBlt
+
+// --- Minimize hook + restore + OS animation suppression ---
+SetWinEventHook
+UnhookWinEvent
+WINEVENTPROC
+SetForegroundWindow
+GetWindowThreadProcessId
+GetWindowLongPtr
+SetWindowLongPtr
+WINDOW_LONG_PTR_INDEX
+WINDOW_EX_STYLE
+DwmSetWindowAttribute
+DWMWINDOWATTRIBUTE
+EVENT_SYSTEM_MINIMIZESTART
+EVENT_SYSTEM_FOREGROUND
+WINEVENT_OUTOFCONTEXT
+WINEVENT_SKIPOWNPROCESS
+IsWindow
+IsWindowVisible
+GetWindowTextLength
+GetWindowPlacement
+WINDOWPLACEMENT

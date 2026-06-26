@@ -1,0 +1,66 @@
+# ---- Build output (never commit these) ----
+# Match at any depth, so src/Dockable/bin, src/Dockable/obj, etc. are all ignored.
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[Ll]og/
+[Ll]ogs/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+[Pp]ublish/
+artifacts/
+
+# CsWin32 / source generators emit into obj/ (already ignored above).
+
+# ---- .NET / MSBuild ----
+project.lock.json
+project.fragment.lock.json
+*.binlog
+msbuild.log
+msbuild.err
+msbuild.wrn
+*.cache
+*.VisualState.xml
+
+# ---- Visual Studio ----
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.userprefs
+
+# ---- VS Code ----
+.vscode/
+
+# ---- Rider / JetBrains ----
+.idea/
+*.sln.iml
+
+# ---- NuGet ----
+*.nupkg
+*.snupkg
+packages/
+.nuget/
+
+# ---- Test results ----
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+
+# ---- OS / editor junk ----
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+*.swp
+*~
