@@ -46,6 +46,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
     public void Play(BitmapSource bitmap, Rect sourceDip, Point targetDip, Rect monitorDip, bool reverse, Action? onCompleted)
     {
         EnsureOverlay();
+        FinishCurrent(); // only one animation at a time on the shared overlay — finalize any in-flight one
         SyncOverlay(monitorDip);
 
         _monitorOrigin = new Point(monitorDip.Left, monitorDip.Top);
@@ -77,6 +78,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
     public void ShowAtSource(BitmapSource bitmap, Rect sourceDip, Rect monitorDip)
     {
         EnsureOverlay();
+        FinishCurrent(); // finalize any in-flight animation so its window lands and frees up before this one
         SyncOverlay(monitorDip);
 
         _monitorOrigin = new Point(monitorDip.Left, monitorDip.Top);
@@ -150,6 +152,22 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _translate.Y = (_target.Y - srcCenterY) * t;
 
         _image!.Opacity = 1.0 - 0.2 * t; // gentle fade as it lands
+    }
+
+    /// <summary>
+    /// Ends any animation currently in flight by running its completion callback now (the previous
+    /// window snaps to its tile and is freed) — the shared overlay can only show one at a time, so
+    /// starting a new one must not silently drop the old one's onCompleted (which would leave it stuck).
+    /// </summary>
+    private void FinishCurrent()
+    {
+        if (_rendering is null)
+            return;
+        CompositionTarget.Rendering -= _rendering;
+        _rendering = null;
+        var done = _onCompleted;
+        _onCompleted = null;
+        done?.Invoke();
     }
 
     private void EnsureOverlay()

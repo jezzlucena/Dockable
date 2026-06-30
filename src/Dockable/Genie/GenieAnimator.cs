@@ -92,6 +92,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
     public void Play(BitmapSource bitmap, Rect sourceDip, Point targetDip, Rect monitorDip, bool reverse, Action? onCompleted)
     {
         EnsureOverlay();
+        FinishCurrent(); // only one warp at a time on the shared overlay — finalize any in-flight one first
         SyncOverlay(monitorDip);
 
         _brush!.ImageSource = bitmap;
@@ -118,6 +119,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
     public void ShowAtSource(BitmapSource bitmap, Rect sourceDip, Rect monitorDip)
     {
         EnsureOverlay();
+        FinishCurrent(); // finalize any in-flight warp so its window lands and frees up before this one
         SyncOverlay(monitorDip); // size the reusable overlay to the relevant monitor
 
         _brush!.ImageSource = bitmap;
@@ -137,6 +139,8 @@ public sealed class GenieAnimator : IMinimizeAnimator
     {
         EnsureOverlay();
         _target = new Point(targetDip.X - _monitorOrigin.X, targetDip.Y - _monitorOrigin.Y);
+        // (No FinishCurrent here: AnimateTo follows our own ShowAtSource, which already finalized any
+        // prior warp; ShowAtSource doesn't start the render loop, so nothing of ours is in flight.)
         _reverse = reverse;
         _leadFromTop = LeadsFromTop();
         _params = ParamsFor(Style);
@@ -173,6 +177,22 @@ public sealed class GenieAnimator : IMinimizeAnimator
             _onCompleted = null;
             done?.Invoke();
         }
+    }
+
+    /// <summary>
+    /// Ends any animation currently in flight by running its completion callback now (the previous
+    /// window snaps to its tile and is freed) — the shared overlay can only show one warp at a time, so
+    /// starting a new one must not silently drop the old one's onCompleted (which would leave it stuck).
+    /// </summary>
+    private void FinishCurrent()
+    {
+        if (_rendering is null)
+            return;
+        CompositionTarget.Rendering -= _rendering;
+        _rendering = null;
+        var done = _onCompleted;
+        _onCompleted = null;
+        done?.Invoke();
     }
 
     private void EnsureOverlay()

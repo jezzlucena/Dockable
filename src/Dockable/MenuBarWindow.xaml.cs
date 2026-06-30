@@ -374,6 +374,10 @@ public partial class MenuBarWindow : Window
 
     // --- Theme ---
 
+    /// <summary>Re-applies the bar's colours for the current theme — called when the user switches the
+    /// Light/Dark/Auto setting while the menu bar is open, so it tracks the dock.</summary>
+    public void RefreshTheme() => ApplyTheme();
+
     private void ApplyTheme()
     {
         bool dark = ViewModel?.Settings.Theme switch

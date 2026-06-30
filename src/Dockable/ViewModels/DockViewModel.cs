@@ -632,6 +632,9 @@ public sealed partial class DockViewModel : ObservableObject
     public DockItemViewModel? FindMinimizedWindow(IntPtr hwnd)
         => _minimizedVms.FirstOrDefault(i => i.Hwnd == hwnd);
 
+    /// <summary>The current minimized-window tiles (snapshot), e.g. to restore them all on exit.</summary>
+    public IReadOnlyList<DockItemViewModel> MinimizedWindows => _minimizedVms.ToList();
+
     /// <summary>The taskbar-app tile (pinned or running) whose window list contains <paramref name="hwnd"/>.</summary>
     public DockItemViewModel? FindAppForWindow(IntPtr hwnd)
         => _appVms.FirstOrDefault(a => a.Windows.Contains(hwnd));

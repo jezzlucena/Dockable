@@ -27,6 +27,11 @@ public sealed class RefractionEffect : ShaderEffect
         DependencyProperty.Register(nameof(DistortionAmount), typeof(double), typeof(RefractionEffect),
             new UIPropertyMetadata(0.06, PixelShaderConstantCallback(0)));
 
+    // c1 is reserved for the UV-space pixel size (ddx/ddy), auto-filled by WPF — see the constructor.
+    public static readonly DependencyProperty BlurRadiusProperty =
+        DependencyProperty.Register(nameof(BlurRadius), typeof(double), typeof(RefractionEffect),
+            new UIPropertyMetadata(0.0, PixelShaderConstantCallback(2)));
+
     /// <summary>True when the shader compiled and loaded — i.e. refraction is actually available.</summary>
     public static bool IsAvailable => Shader is not null;
 
@@ -35,9 +40,13 @@ public sealed class RefractionEffect : ShaderEffect
         if (Shader is null)
             return; // pass-through; caller should check IsAvailable
         PixelShader = Shader;
+        // Have WPF fill c1 with the texture coordinate's ddx/ddy (the UV size of one device pixel) so the
+        // frosted blur steps by real pixels — aspect-correct on the wide, short bar without us passing its size.
+        DdxUvDdyUvRegisterIndex = 1;
         UpdateShaderValue(InputProperty);
         UpdateShaderValue(DisplacementMapProperty);
         UpdateShaderValue(DistortionAmountProperty);
+        UpdateShaderValue(BlurRadiusProperty);
     }
 
     /// <summary>The content to refract (s0). Auto-bound to the element the effect is applied to.</summary>
@@ -61,6 +70,13 @@ public sealed class RefractionEffect : ShaderEffect
         set => SetValue(DistortionAmountProperty, value);
     }
 
+    /// <summary>Frosted-glass blur radius in device pixels (0 = sharp). A 3×3 weighted tap kernel.</summary>
+    public double BlurRadius
+    {
+        get => (double)GetValue(BlurRadiusProperty);
+        set => SetValue(BlurRadiusProperty, value);
+    }
+
     private static PixelShader? Build()
     {
         byte[]? bytecode = ShaderCompiler.Compile(Hlsl, "main", "ps_2_0");
@@ -80,16 +96,41 @@ public sealed class RefractionEffect : ShaderEffect
         }
     }
 
-    // s0 = content being refracted; s1 = displacement map; c0 = distortion strength.
+    // s0 = content being refracted; s1 = displacement map; c0 = distortion strength;
+    // c1 = ddx/ddy of UV (WPF-filled: one device pixel in UV); c2 = blur radius (pixels).
     private const string Hlsl = @"
 sampler2D inputSampler : register(s0);
 sampler2D dispSampler  : register(s1);
 float distortion : register(c0);
+float4 ddxy      : register(c1);   // (ddxU, ddxV, ddyU, ddyV) — UV size of one device pixel
+float blurRadius : register(c2);   // frosted-glass blur radius, in device pixels
 
 float4 main(float2 uv : TEXCOORD) : COLOR
 {
     float2 d = tex2D(dispSampler, uv).rg - 0.5;   // -0.5..0.5 offset direction
-    return tex2D(inputSampler, uv + d * distortion);
+    float2 ruv = uv + d * distortion;             // refracted sample point
+
+    // Frosted glass: a 13-tap, two-ring weighted kernel around the refracted point, stepped by real
+    // pixels (so the blur stays circular on the wide, short bar). An inner ring at the radius plus an
+    // outer ring at twice the radius keeps it smooth as the radius grows. blurRadius = 0 → one tap.
+    float2 s  = float2(ddxy.x, ddxy.w) * blurRadius;
+    float2 s2 = s * 2.0;
+    float4 c  = tex2D(inputSampler, ruv) * 4.0;
+    // inner ring (radius): axes weighted 2, diagonals 1
+    c += tex2D(inputSampler, ruv + float2( s.x, 0.0)) * 2.0;
+    c += tex2D(inputSampler, ruv + float2(-s.x, 0.0)) * 2.0;
+    c += tex2D(inputSampler, ruv + float2(0.0,  s.y)) * 2.0;
+    c += tex2D(inputSampler, ruv + float2(0.0, -s.y)) * 2.0;
+    c += tex2D(inputSampler, ruv + float2( s.x,  s.y));
+    c += tex2D(inputSampler, ruv + float2(-s.x, -s.y));
+    c += tex2D(inputSampler, ruv + float2( s.x, -s.y));
+    c += tex2D(inputSampler, ruv + float2(-s.x,  s.y));
+    // outer ring (2x radius): axes weighted 1
+    c += tex2D(inputSampler, ruv + float2( s2.x, 0.0));
+    c += tex2D(inputSampler, ruv + float2(-s2.x, 0.0));
+    c += tex2D(inputSampler, ruv + float2(0.0,  s2.y));
+    c += tex2D(inputSampler, ruv + float2(0.0, -s2.y));
+    return c / 20.0;
 }";
 
     /// <summary>

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dockable — A macOS-style Dock for Windows 11</title>
+  <meta name="description" content="Dockable brings the macOS Dock to Windows 11: magnifying icons, a Liquid Glass bar, a menu bar, and Genie, Suck & Scale minimize effects. Light, Dark & Auto." />
+  <link rel="icon" type="image/png" href="assets/dockable-32.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ░░░ Top navigation — frosted glass ░░░ -->
+  <header class="nav" id="nav">
+    <a class="nav-brand" href="#top" data-i18n-aria="aria_home" aria-label="Dockable home">
+      <img src="assets/dockable.png" alt="" class="nav-logo" />
+      <span>Dockable</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#launcher" data-i18n="nav_launcher">Launcher</a>
+      <a href="#effects" data-i18n="nav_effects">Effects</a>
+      <a href="#glass" data-i18n="nav_glass">Liquid Glass</a>
+      <a href="#themes" data-i18n="nav_themes">Themes</a>
+      <a href="#menubar" data-i18n="nav_menubar">Menu Bar</a>
+    </nav>
+    <div class="nav-actions">
+      <select class="lang-select" id="langSelect" data-i18n-aria="aria_language" aria-label="Language"></select>
+      <button class="theme-toggle" id="themeToggle" data-i18n-aria="aria_switch_theme" aria-label="Switch theme" title="Theme: Auto">
+        <span class="theme-toggle-icon" aria-hidden="true"></span>
+        <span class="theme-toggle-label">Auto</span>
+      </button>
+      <a class="btn btn-steam" data-steam href="#"><img class="steam-logo" src="assets/steam.svg" alt="" /><span data-i18n="nav_steam">Get on Steam</span></a>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- ░░░ Hero ░░░ -->
+    <section class="hero" id="hero">
+      <div class="hero-glow" aria-hidden="true">
+        <span class="blob blob-1"></span>
+        <span class="blob blob-2"></span>
+        <span class="blob blob-3"></span>
+      </div>
+
+      <div class="hero-content">
+        <img src="assets/dockable.png" alt="Dockable app icon" class="hero-icon" />
+        <h1 class="hero-title">Dockable</h1>
+        <p class="hero-tagline" data-i18n="hero_tagline">The macOS&nbsp;Dock, reimagined for Windows&nbsp;11.</p>
+        <p class="hero-sub" data-i18n="hero_sub">Magnifying icons. A Liquid&nbsp;Glass bar. A menu bar. And windows that
+          warp into the dock with Genie, Suck&nbsp;&amp; Scale. Light, Dark, or Auto — it follows your system.</p>
+        <div class="hero-cta">
+          <a class="btn btn-steam btn-lg" data-steam href="#"><img class="steam-logo" src="assets/steam.svg" alt="" /><span data-i18n="cta_steam">Get it on Steam</span></a>
+          <a class="btn btn-ghost btn-lg" href="https://github.com/jezzlucena/Dockable" target="_blank" rel="noopener" data-i18n="cta_github">View on GitHub</a>
+        </div>
+      </div>
+
+      <!-- Interactive magnifying dock — mirrors the app's fisheye magnification -->
+      <div class="hero-dock-stage">
+        <div class="dock" id="heroDock" role="presentation">
+          <div class="dock-item" data-i18n-label="label_start" data-label="Start" style="--g1:#5cb8f7;--g2:#1f76e6">
+            <svg class="dock-glyph win" viewBox="0 0 100 100" aria-hidden="true">
+              <rect x="6"  y="6"  width="40" height="40" rx="4"/>
+              <rect x="54" y="6"  width="40" height="40" rx="4"/>
+              <rect x="6"  y="54" width="40" height="40" rx="4"/>
+              <rect x="54" y="54" width="40" height="40" rx="4"/>
+            </svg>
+          </div>
+          <div class="dock-item" data-i18n-label="label_browser" data-label="Browser"  style="--g1:#4aa3ff;--g2:#0a5bd0"><span class="emoji">🌐</span></div>
+          <div class="dock-item" data-i18n-label="label_mail" data-label="Mail"     style="--g1:#5ec8ff;--g2:#1f8de6"><span class="emoji">✉️</span></div>
+          <div class="dock-item" data-i18n-label="label_music" data-label="Music"    style="--g1:#ff6a8b;--g2:#ff2d55"><span class="emoji">🎵</span></div>
+          <div class="dock-item" data-i18n-label="label_photos" data-label="Photos"   style="--g1:#ffd16b;--g2:#ff8a3d"><span class="emoji">🖼️</span></div>
+          <div class="dock-item" data-i18n-label="label_code" data-label="Code"     style="--g1:#3a3f4a;--g2:#15171c"><span class="emoji">⌨️</span></div>
+          <div class="dock-item" data-i18n-label="label_files" data-label="Files"    style="--g1:#ffd968;--g2:#f7b500"><span class="emoji">📁</span></div>
+          <div class="dock-item dock-img" data-i18n-label="label_prefs" data-label="Preferences"><img src="assets/settings.png" alt="" /></div>
+          <div class="dock-sep" aria-hidden="true"></div>
+          <div class="dock-item" data-i18n-label="label_trash" data-label="Recycle Bin" style="--g1:#c9ced6;--g2:#9aa1ad"><span class="emoji">🗑️</span></div>
+        </div>
+      </div>
+      <div class="scroll-hint" aria-hidden="true"><span data-i18n="scroll">Scroll</span><span class="chev"></span></div>
+    </section>
+
+    <!-- ░░░ Statement ░░░ -->
+    <section class="statement reveal">
+      <p><span data-i18n="statement_main">A dock that feels like it was always part of Windows.</span>
+        <span class="dim" data-i18n="statement_dim">Pinned and running apps, magnified on hover, in a bar of real glass.</span></p>
+    </section>
+
+    <!-- ░░░ App Launcher ░░░ -->
+    <section class="feature" id="launcher">
+      <div class="feature-word reveal"><h2 data-i18n="word_launcher">App&nbsp;Launcher</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="launcher_lead">Your taskbar, magnified.</p>
+        <p class="feature-text" data-i18n="launcher_text">Dockable mirrors your pinned and running apps in a single glass bar. Glide
+          across it and icons swell with a smooth fisheye — the same raised-cosine falloff as the Mac.
+          Drag to reorder, drop a file to pin, fling one off to remove it.</p>
+        <ul class="feature-points">
+          <li data-i18n="launcher_p1">Live magnification with adjustable size &amp; radius</li>
+          <li data-i18n="launcher_p2">Dock-owned pins, seeded once from your taskbar</li>
+          <li data-i18n="launcher_p3">Running indicators &amp; open-app bounce</li>
+        </ul>
+        <p class="feature-hint" data-i18n="launcher_hint">↑ Try the dock above — move your cursor across it.</p>
+      </div>
+    </section>
+
+    <!-- ░░░ Minimize effects ░░░ -->
+    <section class="effects-intro reveal" id="effects">
+      <p><span data-i18n="effects_main">Windows don't just vanish.</span> <span class="dim" data-i18n="effects_dim">They warp into the dock — pick your style.</span></p>
+    </section>
+
+    <!-- Genie -->
+    <section class="feature feature-effect" id="genie">
+      <div class="feature-word reveal"><h2 data-i18n="word_genie">Genie</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="genie_lead">The classic stretch &amp; pour.</p>
+        <p class="feature-text" data-i18n="genie_text">A true 3-D mesh warp bends the window through a glassy neck and pours it
+          into its dock tile — captured frame-perfect so there's no black flash.</p>
+        <div class="effect-stage" data-effect="genie">
+          <canvas class="effect-canvas"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Suck -->
+    <section class="feature feature-effect" id="suck">
+      <div class="feature-word reveal"><h2 data-i18n="word_suck">Suck</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="suck_lead">A hard funnel, straight down.</p>
+        <p class="feature-text" data-i18n="suck_text">The window collapses into a tight point above the dock and drops in — fast,
+          punchy, and oddly satisfying.</p>
+        <div class="effect-stage" data-effect="suck">
+          <canvas class="effect-canvas"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scale -->
+    <section class="feature feature-effect" id="scale">
+      <div class="feature-word reveal"><h2 data-i18n="word_scale">Scale</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="scale_lead">Simple. Quick. Clean.</p>
+        <p class="feature-text" data-i18n="scale_text">Prefer restraint? The window simply scales down and glides to its tile.
+          Tune every effect's tempo with the Effect Speed slider.</p>
+        <div class="effect-stage" data-effect="scale">
+          <canvas class="effect-canvas"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ░░░ Liquid Glass ░░░ -->
+    <section class="feature feature-glass" id="glass">
+      <div class="glass-bg" aria-hidden="true">
+        <span class="gblob gb1"></span><span class="gblob gb2"></span><span class="gblob gb3"></span>
+      </div>
+      <div class="feature-word reveal"><h2 data-i18n="word_glass">Liquid&nbsp;Glass</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="glass_lead">Real refraction. Real blur. A living rim.</p>
+        <p class="feature-text" data-i18n="glass_text">Three bar styles — Translucent, Acrylic, and Liquid&nbsp;Glass: a runtime
+          pixel shader that blurs and saturates the desktop behind the bar, bends light at a curved rim,
+          and drifts a slow specular sheen across the surface.</p>
+        <div class="glass-demo reveal-soft" aria-hidden="true">
+          <div class="glass-bar">
+            <span class="glass-shimmer"></span>
+            <span class="gd-icon" style="--g1:#5cb8f7;--g2:#1f76e6"></span>
+            <span class="gd-icon" style="--g1:#ff6a8b;--g2:#ff2d55"></span>
+            <span class="gd-icon" style="--g1:#ffd16b;--g2:#ff8a3d"></span>
+            <span class="gd-icon" style="--g1:#7ee07e;--g2:#1fb84a"></span>
+            <span class="gd-icon" style="--g1:#c9a3ff;--g2:#7b3df7"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ░░░ Themes ░░░ -->
+    <section class="feature" id="themes">
+      <div class="feature-word reveal"><h2 data-i18n-html="word_themes">Light. Dark.<br/>Auto.</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="themes_lead">It matches your system — or you choose.</p>
+        <p class="feature-text" data-i18n="themes_text">Every surface is themed. Pick Light, Dark, or Auto, which follows the
+          Windows app theme and re-paints the instant you switch.</p>
+        <div class="theme-tiles reveal-soft">
+          <button class="theme-tile theme-light" data-set-theme="light"><span class="tt-dock"></span><span class="tt-name" data-i18n="tile_light">Light</span></button>
+          <button class="theme-tile theme-dark"  data-set-theme="dark"><span class="tt-dock"></span><span class="tt-name" data-i18n="tile_dark">Dark</span></button>
+          <button class="theme-tile theme-auto"  data-set-theme="auto"><span class="tt-dock"></span><span class="tt-name" data-i18n="tile_auto">Auto</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ░░░ Menu Bar ░░░ -->
+    <section class="feature" id="menubar">
+      <div class="feature-word reveal"><h2 data-i18n="word_menubar">Menu&nbsp;Bar</h2></div>
+      <div class="feature-body reveal">
+        <p class="feature-lead" data-i18n="menubar_lead">A familiar strip across the top.</p>
+        <p class="feature-text" data-i18n="menubar_text">Flip on the optional menu bar and a thin, always-acrylic strip docks to the
+          top of your primary screen — Windows logo menu, the focused app's real name, a keyboard-layout
+          switcher, Quick&nbsp;Settings, Notifications, and a clock.</p>
+        <!-- Mock menu bar -->
+        <div class="menubar-demo reveal-soft" aria-hidden="true">
+          <div class="mb-left">
+            <svg class="mb-win" viewBox="0 0 100 100"><rect x="6" y="6" width="40" height="40" rx="4"/><rect x="54" y="6" width="40" height="40" rx="4"/><rect x="6" y="54" width="40" height="40" rx="4"/><rect x="54" y="54" width="40" height="40" rx="4"/></svg>
+            <span class="mb-app">Google Chrome</span>
+            <span class="mb-menu" data-i18n="mb_file">File</span><span class="mb-menu" data-i18n="mb_edit">Edit</span><span class="mb-menu" data-i18n="mb_view">View</span>
+          </div>
+          <div class="mb-right">
+            <span class="mb-icon">⌄</span>
+            <span class="mb-icon">🔔</span>
+            <span class="mb-kbd">ENG</span>
+            <span class="mb-clock" id="mbClock">9:41</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ░░░ More features grid ░░░ -->
+    <section class="grid-section reveal">
+      <h3 class="grid-title" data-i18n="grid_title">Every detail, considered.</h3>
+      <div class="grid">
+        <div class="card"><span class="card-emoji">🌍</span><h4 data-i18n="card1_h">Five languages</h4><p data-i18n="card1_p">English, Português&nbsp;(BR), Español, Українська &amp; 中文 — switched live.</p></div>
+        <div class="card"><span class="card-emoji">🪄</span><h4 data-i18n="card2_h">Drag to reorder</h4><p data-i18n="card2_p">A free-roaming ghost follows your cursor; hold steady to remove a pin.</p></div>
+        <div class="card"><span class="card-emoji">🗑️</span><h4 data-i18n="card3_h">Recycle Bin</h4><p data-i18n="card3_p">Drop files to delete; a state-aware empty/full icon, far right.</p></div>
+        <div class="card"><span class="card-emoji">📐</span><h4 data-i18n="card4_h">Per-monitor DPI</h4><p data-i18n="card4_p">Crisp on any display, with an AppBar that reserves just the bar.</p></div>
+        <div class="card"><span class="card-emoji">👁️</span><h4 data-i18n="card5_h">Taskbar, your way</h4><p data-i18n="card5_p">Keep it Always, Auto-hide it, or hide it entirely. Restored on exit.</p></div>
+        <div class="card"><span class="card-emoji">⚡</span><h4 data-i18n="card6_h">Built native</h4><p data-i18n="card6_p">C# · WPF · .NET&nbsp;9 · CsWin32. Light, fast, and unpackaged.</p></div>
+      </div>
+    </section>
+
+    <!-- ░░░ Download CTA ░░░ -->
+    <section class="download reveal" id="download">
+      <img src="assets/dockable.png" alt="" class="dl-icon" />
+      <h2 data-i18n="download_h">Bring your desktop to life.</h2>
+      <p data-i18n="download_p">Dockable for Windows&nbsp;11 — available on Steam.</p>
+      <a class="btn btn-steam btn-lg" data-steam href="#"><img class="steam-logo" src="assets/steam.svg" alt="" /><span data-i18n="cta_steam">Get it on Steam</span></a>
+      <p class="dl-note" data-i18n="download_note">Steam link coming soon.</p>
+    </section>
+  </main>
+
+  <!-- ░░░ Footer ░░░ -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <img src="assets/dockable.png" alt="" class="footer-logo" />
+        <span>Dockable</span>
+      </div>
+      <p class="footer-credit" data-i18n-html="footer_credit">Created by <a href="https://github.com/jezzlucena" target="_blank" rel="noopener">Jezz Lucena</a> · Inspired by Apple's macOS Dock.</p>
+      <p class="footer-fine" data-i18n="footer_fine">Dockable is an independent project and is not affiliated with Apple or Microsoft. macOS and Windows are trademarks of their respective owners.</p>
+      <p class="footer-vibe" data-i18n="footer_vibe">Proudly vibe coded.</p>
+    </div>
+  </footer>
+
+  <script src="i18n.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

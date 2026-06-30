@@ -92,6 +92,10 @@ public partial class App : Application
         }
     }
 
+    /// <summary>Re-applies the menu bar's theme colours (if it's open) — invoked when the dock's
+    /// Light/Dark/Auto theme changes so the bar stays coordinated with the dock.</summary>
+    public void RefreshMenuBarTheme() => _menuBarWindow?.RefreshTheme();
+
     protected override void OnExit(ExitEventArgs e)
     {
         // Only the instance that actually started the dock should persist settings / restore the

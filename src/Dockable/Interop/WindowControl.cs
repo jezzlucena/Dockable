@@ -82,6 +82,11 @@ public static class WindowControl
         PInvoke.SetForegroundWindow((HWND)hwnd);
     }
 
+    /// <summary>Un-minimizes a window without forcing it to the foreground — used to restore every
+    /// dock-minimized window on exit without thrashing focus across all of them.</summary>
+    public static void RestoreNoForeground(IntPtr hwnd) =>
+        PInvoke.ShowWindow((HWND)hwnd, SHOW_WINDOW_CMD.SW_RESTORE);
+
     /// <summary>Brings a window forward (restoring it first if minimized).</summary>
     public static void Activate(IntPtr hwnd)
     {

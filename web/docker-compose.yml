@@ -1,0 +1,16 @@
+# Serves the Dockable landing page (the static site in ./web) on http://localhost:8086
+#
+#   docker compose up -d      # start in the background
+#   docker compose down       # stop
+#
+# The site is plain static files, so we just mount ./web into nginx (read-only) —
+# no build step, and edits to web/ show up on refresh (re-request; nginx serves live).
+services:
+  landing:
+    image: nginx:alpine
+    container_name: dockable-landing
+    ports:
+      - "8086:80"
+    volumes:
+      - ./:/usr/share/nginx/html:ro
+    restart: unless-stopped

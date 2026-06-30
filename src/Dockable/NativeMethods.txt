@@ -111,6 +111,7 @@ WINDOW_EX_STYLE
 DwmSetWindowAttribute
 DWMWINDOWATTRIBUTE
 EVENT_SYSTEM_MINIMIZESTART
+EVENT_SYSTEM_MINIMIZEEND
 EVENT_SYSTEM_FOREGROUND
 WINEVENT_OUTOFCONTEXT
 WINEVENT_SKIPOWNPROCESS
@@ -153,6 +154,21 @@ WINDOW_DISPLAY_AFFINITY
 // --- Liquid Glass: cap the capture rate at the monitor's refresh rate ---
 GetDeviceCaps
 GET_DEVICE_CAPS_INDEX
+
+// --- Minimize interception: low-level mouse/keyboard hooks so we can pre-paint the capture
+//     BEFORE the OS minimize (eliminates the disappear-then-reappear flash) ---
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+HOOKPROC
+WINDOWS_HOOK_ID
+MSLLHOOKSTRUCT
+KBDLLHOOKSTRUCT
+WindowFromPoint
+GetAncestor
+GET_ANCESTOR_FLAGS
+IsZoomed
+GetAsyncKeyState
 
 // --- Menu bar: live focused-window title (track the title text changing in place) ---
 EVENT_OBJECT_NAMECHANGE

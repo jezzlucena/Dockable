@@ -172,11 +172,18 @@ src/Dockable/
                          taskbar-eligible app windows (exe path + window AUMID).
     PinMatcher.cs        Multi-strategy "does this window belong to this pin?".
     WindowFilter.cs      Shared "is this a normal app window" test (internal; takes HWND).
-    MinimizeHook.cs      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART) → WindowMinimizing event.
+    MinimizeHook.cs      SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART..MINIMIZEEND) → WindowMinimizing /
+                         WindowUnminimized events (the latter for external taskbar/Alt+Tab restores).
+    MinimizeInterceptHook.cs  Low-level WH_MOUSE_LL + WH_KEYBOARD_LL hooks that PRE-EMPT a minimize
+                         gesture so the warp's frame 0 paints before the OS minimizes (no flash):
+                         min-button click (NCHITTEST==HTMINBUTTON, else DWMWA_CAPTION_BUTTON_BOUNDS
+                         left-third; arm-on-down, act-on-up, swallow both) → MinimizeRequested; Win+Down
+                         → MinimizeRequested; Win+M → MinimizeAllRequested.
     ForegroundWatcher.cs SetWinEventHook(EVENT_SYSTEM_FOREGROUND) → ForegroundChanged event.
     Fullscreen.cs        Shared test: is the foreground window covering a given window's monitor
                          (exclusive or borderless-fullscreen)? Used by the dock + menu bar to hide.
-    WindowControl.cs     Per-window transitions suppression, restore, activate, restore-rect.
+    WindowControl.cs     Per-window transitions suppression, minimize/restore (incl. no-activate +
+                         no-foreground variants), activate, restore-rect.
     SystemTheme.cs       Reads the Windows light/dark app theme (registry AppsUseLightTheme).
     StartupManager.cs    HKCU Run-key "run at login" entries (IsEnabled/Enable/Disable).
     RecycleBin.cs        IsEmpty / Empty (with OS prompt) / SendToRecycleBin (SHFileOperation
@@ -219,6 +226,12 @@ src/Dockable/
   displacement; bottom-anchored growth. Each cell advances by `baseSize*scale`; the **icon renders
   at `IconFill` (0.84) of its cell**, centered, so icons sit smaller within the bar. Thin bar; icons
   overflow above it. `Recompute()` sets window/bar geometry on item/settings changes.
+  - **Hover is geometry-driven, not WPF `MouseLeave`.** `MouseEnter` (reliable on the opaque bar) kicks
+    the loop off, but each frame recomputes `_hovering` from the real cursor (`GetCursorPos` →
+    `PointFromScreen`, tested against the window footprint). On a transparent layered window the cursor
+    crossing a fully-transparent overflow pixel spuriously fires `MouseLeave`, which would drop
+    magnification and make the dock + hover labels jitter — geometry is stable. (Skipped during
+    drag/resize, which pin `_hovering` themselves.)
 - **Conventions**: C# 12, nullable enabled, file-scoped namespaces, ImplicitUsings. Short XML docs on
   public members; inline comments only where intent is non-obvious (esp. *why* a Win32 call behaves a
   way). Keep per-frame work off WPF layout passes. Shell icon extraction must be off the UI thread
@@ -332,19 +345,70 @@ src/Dockable/
   slide mode / `Behavior` setting anymore — the *Windows taskbar's* native auto-hide is the only
   hide mechanism). `PositionDock` centers on the monitor; when the taskbar is hidden the dock anchors
   to the **full monitor bottom** (not the work-area bottom).
-- **AppBar reserves only the resting bar** (`BarHeight`/`BarWidth` = `IconSize + 2·VPad`), not the
-  taller window that holds magnified/overflowing icons. The window stays full-size (so magnification
-  can render above the bar) but is **clipped via `SetWindowRgn` down to the resting bar while idle**
+- **AppBar reserves exactly the resting (un-magnified) dock**, not the taller window that holds
+  magnified/overflowing icons. `ReserveAppBarSpace` reserves from the docked edge to the bar's **far**
+  edge (`WindowHeight - BarTop` for Bottom, i.e. including the bar's small margin from the screen edge —
+  *not* just `BarHeight`), so a maximized window abuts the dock with **no gap and no overlap** ("avoid
+  the dock only and always, no margin on top"). It's **re-reserved whenever the dock is resized**: live
+  on the Preferences Size slider (via `ApplyWindowSize`, which runs on every `WindowWidth/Height`
+  change) and on the **drop** of a separator drag (`EndSeparatorResize`; deferred during the drag so
+  maximized windows don't reflow each frame). The window stays full-size (so magnification can render
+  above the bar) but is **clipped via `SetWindowRgn` down to the resting bar while idle**
   (`ApplyIdleRegion`) so the overflow area is click-through to windows underneath. Hovering clears
   the clip (`ClearWindowRegion`, on `OnMouseEnter`); it's re-applied when the render loop settles.
 - Per-monitor-v2 DPI aware. Positioning is exact on the **primary** monitor; secondary-monitor
   placement is approximate (a known TODO).
 
 ### Minimize / restore (Phase 3)
-- Minimizing any normal window is intercepted (`Interop/MinimizeHook`,
-  `EVENT_SYSTEM_MINIMIZESTART`) and replaced with a custom effect into a dock **thumbnail tile**
+- Minimizing any normal window is replaced with a custom effect into a dock **thumbnail tile**
   (`DockItemKind.MinimizedWindow`, appended after a separator, not persisted). Clicking the tile
-  reverses the effect and restores (`WindowControl.Restore` + foreground), removing the tile.
+  reverses the effect and restores; a window minimized into the dock is also restored by clicking its
+  app-group icon (`ActivateOrLaunch` handles iconic windows).
+- **Two interception paths**:
+  - **Pre-emptive (preferred, no flash) — `Interop/MinimizeInterceptHook`.** There's no pre-minimize OS
+    event, so low-level hooks catch the *gesture* and paint frame 0 **before** the OS minimizes:
+    `WH_MOUSE_LL` on the **minimize button** (`WM_NCHITTEST==HTMINBUTTON`, with a
+    `DWMWA_CAPTION_BUTTON_BOUNDS` left-third fallback for custom title bars like File Explorer / Windows
+    Terminal that report HTCAPTION/HTCLIENT) and `WH_KEYBOARD_LL` for **Win+Down** (minimizes even a
+    maximized window — a single press, not the OS two-stage) and **Win+M**. The mouse hook **arms on
+    button-down and acts on button-up, swallowing both** — swallowing only the up would starve a native
+    caption button's modal press loop and leave the mouse captured (dock goes unresponsive). Releasing
+    off the button cancels (drag-off). Hover/highlight still passes (only button events are swallowed).
+    Custom title bars that report neither fall through to the reactive path. Callbacks come on the UI
+    thread; the dock defers the real work via `Dispatcher.BeginInvoke` so the hook returns fast.
+  - **Reactive fallback — `Interop/MinimizeHook`, `EVENT_SYSTEM_MINIMIZESTART`.** Fires *after* the OS
+    minimized (taskbar/menu/programmatic minimizes), so it may show a brief OS animation before the warp.
+- **Intercepted (`windowStillVisible`) flow** (`InterceptedMinimize`→`MinimizeOneAnimated`): ensure the
+  target is foreground (so the capture isn't occluded — raise + `ForegroundSettleMs` wait if it wasn't),
+  take a **fresh** `WindowCapture.Capture`, `ShowAtSource` (frame 0), wait for that overlay frame to
+  actually render (`AfterRendered`, 2 `CompositionTarget.Rendering` ticks) **then** minimize the real
+  window behind it via `MinimizeAndFocusNext` — `SW_MINIMIZE` alone often hands activation to the
+  topmost dock, so we pick the next real app window first and `SetForegroundWindow` it (Win+Down's
+  next-window focus, matching the OS). `MinimizeToDock`/`MinimizeOneAnimated` take `onDone` +
+  `focusNext`; `MinimizeOneAnimated` also takes `raiseIfNeeded` (raise+settle a non-foreground window
+  before capture, vs. capture it as-is).
+- **Win+M = sequential, no focus changes** (`OnMinimizeAllRequested`→`MinimizeListSequential`): enumerate
+  windows in **Z-order (top first)** once, then minimize each in turn (`raiseIfNeeded:false`,
+  `focusNext:false`). Walking top-down means each window is already the top-most non-minimized one, so it
+  captures cleanly without raising, and we deliberately **don't** focus-next — Win+M ends on the desktop,
+  and a `SetForegroundWindow` from our (non-foreground) process would be rejected into a **taskbar-button
+  flash** rather than a focus. (An earlier foreground-cascade that focused each next window caused exactly
+  that flash.)
+- **Concurrent minimizes** (rapid clicks, the cascade, etc.) share the single overlay; each animator's
+  `FinishCurrent()` runs at the start of a new play to **finalize the in-flight one** (invoke its pending
+  `onCompleted` so the previous window snaps to its tile and is freed from `_busy`) — otherwise the
+  stomped animation's callback was lost and its tile stayed stuck in `_busy` (unresponsive).
+- **External restore sync:** `MinimizeHook` also raises `WindowUnminimized` on `EVENT_SYSTEM_MINIMIZEEND`;
+  when a tracked window is restored by the taskbar/Alt+Tab/the app itself, `OnWindowUnminimized` drops the
+  now-stale tile/tracking (no reverse warp — transitions are suppressed so the OS restore is instant,
+  which is what those gestures should look like). Guarded by `_busy` so our own click-to-restore is unaffected.
+- **Adopt pre-existing minimized windows at startup** (`SyncPreMinimizedWindows`, after the first
+  refresh): windows already minimized before launch get the per-setting representation — a tile, or
+  (in `MinimizeIntoIcon` mode) owned by their app icon. They can't be captured, so the **app icon stands
+  in** for the missing thumbnail. (Startup-only; windows that *start* minimized later aren't adopted.)
+- **Restore-all on exit:** `RestoreAllMinimized` (first thing in `OnClosed`) un-minimizes every
+  dock-minimized window (`RestoreNoForeground`) and re-enables the transitions we suppressed, so the
+  user isn't left with windows stranded behind a gone dock. (A hard force-kill skips it.)
 - **Three effects**, chosen by `DockSettings.MinimizeEffect` (`Suck`/`Scale`/`Genie`, set via the
   settings window's "Minimize windows using" combo). `DockWindow.MinimizeAnimator` maps them to two
   pre-warmed `IMinimizeAnimator`s: **Scale** → `ScaleAnimator` (capture scales down/translates to the
@@ -353,11 +417,6 @@ src/Dockable/
   `SpeedMultiplier`. Both overlays are pre-warmed at startup. Optionally, `MinimizeIntoIcon` makes a
   window minimize into its app's dock icon instead of a separate thumbnail tile (falls back to a tile
   when the app has no dock icon).
-- **No-gap minimize:** `OnWindowMinimizing` calls `ShowAtSource(bitmap, source, monitor)` to paint the
-  capture exactly where the window was (the un-warped frame 0), then **defers** the heavier
-  `AddMinimizedWindow` relayout + `AnimateTo(tileCenter,…)` via `Dispatcher.BeginInvoke(Loaded)` so the
-  held capture renders first — no empty flash between the real window vanishing and the warp. (Restore
-  uses `Play(reverse:true)` directly — it must start at the tile, not frame 0.)
 - **Capture timing is the crux:** capturing at minimize is too late (window already minimized →
   black sliver). `Genie/WindowThumbnailCache` proactively keeps a recent full capture of each window
   **while it's visible** (`EVENT_SYSTEM_FOREGROUND` + ~1.2 s refresh; capture debounced ~180 ms so
@@ -379,10 +438,13 @@ src/Dockable/
   fresh WPF+3D window per minimize cost 10s–100s ms and was the visible "blink". It maps the capture
   onto an animated `MeshGeometry3D` grid (Viewport3D + orthographic camera) warping into the dock;
   `reverse:true` for restore. Only one genie at a time (shared overlay).
-- Orchestration in `DockWindow.OnWindowMinimizing` / `RestoreMinimized`; `_busy` set guards
-  re-entrancy. Rough edges: first minimize of a window may flash the OS animation briefly before the
-  overlay covers it; DRM/protected windows capture black; stale tiles if an app closes while
-  minimized (needs a destroy hook); multi-monitor genie target approximate.
+- Orchestration in `DockWindow` (`InterceptedMinimize`/`MinimizeOneAnimated`/`MinimizeToDock` for
+  minimize; `OnWindowMinimizing` reactive fallback; `RestoreMinimized`/`RestoreWindowAnimated` for
+  restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
+  path (taskbar/menu/programmatic, or custom title bars the button-hit-test misses) can still flash the
+  OS animation briefly; DRM/protected windows capture black; pre-minimized/elevated windows have no
+  thumbnail (app icon stands in); stale tiles if an app closes while minimized (needs a destroy hook);
+  multi-monitor genie target approximate.
 
 ### macOS-style menu bar (top AppBar) — optional, off by default
 - Enabled via `DockSettings.ShowMenuBar` (Dock Preferences toggle or tray "Show menu bar"). **App owns
@@ -485,8 +547,11 @@ src/Dockable/
   window rect and ignores `SetWindowRgn`, which we rely on for the idle clip; the modern DWM
   system-backdrop needs a non-layered window). `DockSettings.GlassEffect` selects **Simple**
   (translucent, no backdrop window — lightest), **Acrylic** (Composition host-backdrop blur), or
-  **LiquidGlass** (custom blur + saturation + rim refraction via `Genie/RefractionEffect`, whose HLSL
-  is compiled at runtime by `Interop/ShaderCompiler`; falls back to Acrylic where unsupported).
+  **LiquidGlass** (a runtime pixel shader — `Genie/RefractionEffect` — that does **rim refraction**
+  (`DistortionAmount`, via a displacement map) plus a **frosted-glass blur** (`BlurRadius`, a 3×3
+  weighted tap kernel stepped by real device pixels via WPF's `DdxUvDdyUvRegisterIndex`) over the
+  captured backdrop; HLSL compiled at runtime by `Interop/ShaderCompiler`; falls back to Acrylic where
+  unsupported).
 - Pins are dock-owned, NOT written back to the Windows taskbar (Windows blocks it — see above).
 - **Internationalization is in-code** (no `.resx`/satellite assemblies): `Localization/LocData`
   holds per-language string tables, `Loc` is the runtime service, and the `{loc:Loc Key=…}` markup
@@ -506,11 +571,16 @@ Phases 1–3 + polish implemented:
   a pinned shortcut (500ms steady → "Remove"); unpinned/minimized snap back.
 - **Minimize/restore** into dock tiles, three effects (`Suck`/`Scale`/`Genie`) via `MinimizeEffect`,
   with an `EffectSpeed` multiplier and an optional "minimize into the app's dock icon" mode.
+  **Pre-emptively intercepts** the minimize gesture (min-button click, Win+Down, Win+M) via low-level
+  hooks so the warp's frame 0 paints before the OS minimizes (no flash); **Win+M minimizes all
+  sequentially**; external (taskbar/Alt+Tab) restores clear the stale tile; pre-existing minimized
+  windows are adopted on launch; all dock-minimized windows are restored on exit.
 - **Recycle Bin** far-right with a state-aware empty/full icon; **dropping files/folders on it sends
   them to the Recycle Bin** (`RecycleBin.SendToRecycleBin` → `SHFileOperation` FO_DELETE + FOF_ALLOWUNDO;
   `OnDrop`/`OnDragOver` route by `IsOverRecycleBin(x)`, else pin). Group-separators between sections.
 - **macOS-style bar styling** with **Light/Dark/Auto theme** (follows OS in Auto); **icon drop-shadows**;
-  **hover labels** (shared popup tracked per-frame, click-through); **UI sound effects**.
+  **hover labels** (per-icon, in an `IsHitTestVisible=False` Canvas, fading in/out on `IsMouseOver`);
+  **UI sound effects**.
 - **Glass Effect** bar background: Simple / Acrylic / LiquidGlass (separate backdrop window + runtime shader).
 - **Internationalization**: all UI localized (en / pt-BR / es / uk / zh-Hans), live language switch
   from Dock Preferences → System → Language; first run follows the OS language.

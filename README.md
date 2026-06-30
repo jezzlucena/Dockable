@@ -7,6 +7,8 @@ warp into the dock. Fully localized — English, Português (Brasil), Español, 
 
 Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
 
+*Proudly vibe coded.*
+
 ## Features
 
 ### The dock
@@ -42,20 +44,31 @@ Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
   same **Size** setting as in Dock Preferences and they stay in sync.
 
 ### Minimize / restore
-- Minimizing a window (title-bar button, Win+Down, …) is intercepted and replaced with an animation
-  into a **dock thumbnail tile**; clicking the tile reverses it and restores the window. A window
-  minimized into the dock is also restored if you click its app-group icon.
+- Minimizing a window is replaced with an animation into a **dock thumbnail tile**; clicking the tile
+  reverses it and restores the window. A window minimized into the dock is also restored if you click
+  its app-group icon.
+- The minimize gesture is **caught before Windows acts on it** — clicking a window's minimize button,
+  **Win+Down**, or **Win+M** — so the captured window is already on screen as the animation's first
+  frame and there's **no flash** of the window vanishing first. (Some custom title bars fall back to
+  the standard post-minimize path.)
+- **Win+M minimizes everything one window at a time**, each warping into the dock; **Win+Down**
+  minimizes the focused window (and focuses the next one, like Windows does).
 - Three effects, chosen in **Dock Preferences → Minimize windows using**:
   - **Suck** — a hard, fast mesh funnel to a point.
   - **Scale** — the window scales down to (and back from) its tile.
   - **Genie** — a macOS-style 3D mesh warp with a bulging neck.
 - Optionally minimize a window **into its app's dock icon** instead of a separate thumbnail tile
   (Dock Preferences → *Minimize windows into application icon*).
+- **Stays in sync with the rest of Windows:** restoring a window from the taskbar or Alt+Tab clears its
+  dock tile; windows already minimized when the dock launches are adopted into tiles (or their app
+  icon); and quitting the dock restores every window it had minimized, so nothing is left stranded.
 
 ### Window behavior
-- **Always visible** — the dock reserves a strip via a Win32 AppBar (only the resting-bar height; the
-  magnified icons bleed over windows beneath without reserving extra space) and clips itself to that
-  bar when idle so the overflow area stays click-through.
+- **Always visible** — the dock reserves a strip via a Win32 AppBar sized to **exactly the resting
+  (un-magnified) dock**, so maximized windows sit flush against it with no gap and no overlap; the
+  magnified icons bleed over windows beneath without reserving extra space. The reservation updates
+  when you resize the dock (the Preferences **Size** slider or dragging a separator). The dock clips
+  itself to the resting bar when idle so the overflow area stays click-through.
 - **Hide the Windows taskbar** (tray → *Hide taskbar*, on by default) via the taskbar's **native
   auto-hide**, which is self-restoring — even a hard kill leaves a usable, reveal-on-edge taskbar.
 - Per-monitor-v2 DPI awareness; stays out of the Alt+Tab switcher.
@@ -152,7 +165,8 @@ src/Dockable/
   Services/                SettingsStore (atomic JSON persistence)
   Shell/                   ShortcutService (launch + shell icon extraction)
   Interop/                 Start menu, monitors/DPI, AppBar, taskbar auto-hide, taskbar mirror,
-                           pin matching, minimize hook, window control, system theme, Recycle Bin
+                           pin matching, minimize hooks (WinEvent + low-level gesture interception),
+                           window control, system theme, Recycle Bin
   Genie/                   Window capture + thumbnail cache; Genie / Scale animators
                            (IMinimizeAnimator); acrylic/liquid-glass backdrop; pre-warmed overlays
   Converters/              XAML value converters
