@@ -75,54 +75,6 @@ public static class WindowCapture
         }
     }
 
-    /// <summary>
-    /// Captures a screen rectangle (physical pixels) into <paramref name="dest"/> as top-down Bgr32
-    /// rows (stride = w*4). Lets the caller diff successive frames to skip work when nothing changed.
-    /// Returns false if the rect is invalid or the buffer is too small.
-    /// </summary>
-    public static unsafe bool CaptureScreenRectInto(int x, int y, int w, int h, byte[] dest)
-    {
-        if (w <= 0 || h <= 0 || w > 20000 || h > 20000 || dest.Length < w * 4 * h)
-            return false;
-
-        HDC screenDc = PInvoke.GetDC((HWND)IntPtr.Zero);
-        HDC memDc = PInvoke.CreateCompatibleDC(screenDc);
-        try
-        {
-            var bmi = new BITMAPINFO();
-            bmi.bmiHeader.biSize = (uint)sizeof(BITMAPINFOHEADER);
-            bmi.bmiHeader.biWidth = w;
-            bmi.bmiHeader.biHeight = -h; // top-down
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = 0; // BI_RGB
-
-            void* bits;
-            HBITMAP dib = PInvoke.CreateDIBSection(memDc, &bmi, DIB_USAGE.DIB_RGB_COLORS, &bits, default, 0);
-            if (dib.IsNull || bits is null)
-                return false;
-
-            HGDIOBJ previous = PInvoke.SelectObject(memDc, (HGDIOBJ)(void*)dib);
-            try
-            {
-                if (!PInvoke.BitBlt(memDc, 0, 0, w, h, screenDc, x, y, CaptureRop))
-                    return false;
-                Marshal.Copy((IntPtr)bits, dest, 0, w * 4 * h);
-                return true;
-            }
-            finally
-            {
-                PInvoke.SelectObject(memDc, previous);
-                PInvoke.DeleteObject((HGDIOBJ)(void*)dib);
-            }
-        }
-        finally
-        {
-            PInvoke.DeleteDC(memDc);
-            PInvoke.ReleaseDC((HWND)IntPtr.Zero, screenDc);
-        }
-    }
-
     public static unsafe Result? Capture(IntPtr hwnd)
     {
         var window = (HWND)hwnd;

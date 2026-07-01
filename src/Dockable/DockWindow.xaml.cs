@@ -70,13 +70,24 @@ public partial class DockWindow : Window
     private readonly AcrylicBackdrop _acrylic = new();
     private const double BarCornerRadius = 24; // matches DockBackground's CornerRadius
 
-    // Liquid Glass (real refraction): periodic capture of the backdrop behind the bar, fed to the shader.
-    private DispatcherTimer? _glassCaptureTimer;
+    // Liquid Glass (real refraction): a background thread captures the backdrop behind the bar and hands
+    // changed frames to the UI thread to feed the shader (see BackdropCapturer).
     private bool _glassRefractReady; // the refraction effect has been attached to GlassRefract
     private WriteableBitmap? _glassBitmap; // reused source for the refraction (written in place on change)
-    private byte[]? _glassBuf;             // latest capture
-    private byte[]? _glassPrev;            // previous capture (to detect "no change" → skip the shader)
+    private BackdropCapturer? _backdropCapturer; // threaded screen capture + frame diff
     private int _glassW, _glassH;          // current capture size (physical px)
+    private RefractionEffect? _glassRefractInner; // pass 1: rim refraction + chromatic aberration
+    private RefractionEffect? _glassSpecEffect; // the final pass, whose rim specular tracks the cursor
+    private double _glassSpecAmount;        // eased 0..1 activation (ramps with hover/magnification)
+    // Rim-specular tuning: light sits this far above the bar (UV), and the glint eases between a faint
+    // resting sheen and a bright peak as the dock is hovered/magnified.
+    private const double GlassLightHeight = -0.18;
+    private const double GlassSpecAmbient = 0.12;
+    private const double GlassSpecPeak = 0.5;
+
+    // Optional profiling for the glass capture loop, on when the env var DOCKABLE_GLASS_PROFILE is set
+    // (writes %APPDATA%\Dockable\glass_profile.log). Null — and thus free — when disabled.
+    private readonly GlassProfiler? _glassProfiler = GlassProfiler.Enabled ? new GlassProfiler() : null;
 
     // Hide the dock entirely while a full-screen app / borderless-fullscreen game owns the screen.
     private readonly ForegroundWatcher _foreground = new();
@@ -562,20 +573,19 @@ public partial class DockWindow : Window
         bool liquid = mode == GlassEffect.LiquidGlass;
         bool refract = liquid && RefractionEffect.IsAvailable; // real pixel-shader refraction
 
-        // Refraction layer: capture the backdrop behind the bar and run the shader over it.
+        // Refraction layer: a background thread captures the backdrop behind the bar; changed frames
+        // feed the shader on the UI thread.
         if (refract)
         {
             EnsureGlassRefraction();
             SetCaptureExclusion(true); // omit the dock from capture so it doesn't refract itself
-            GlassRefract.Visibility = Visibility.Visible;
-            CaptureGlassBackdrop();
-            _glassCaptureTimer ??= CreateGlassCaptureTimer();
-            _glassCaptureTimer.Start();
+            GlassRefractOuter.Visibility = Visibility.Visible;
+            StartGlassCapture();
         }
         else
         {
-            _glassCaptureTimer?.Stop();
-            GlassRefract.Visibility = Visibility.Collapsed;
+            _backdropCapturer?.Stop();
+            GlassRefractOuter.Visibility = Visibility.Collapsed;
             SetCaptureExclusion(false); // the dock is visible to capture again
         }
 
@@ -594,14 +604,24 @@ public partial class DockWindow : Window
         SyncAcrylic();
     }
 
-    private DispatcherTimer CreateGlassCaptureTimer()
+    /// <summary>Creates (once) and starts the background backdrop capturer, publishing the current bar
+    /// rect so it has something to grab even before the first render frame.</summary>
+    private void StartGlassCapture()
     {
-        // Poll at up to 120 fps, but no faster than the monitor refreshes (a faster poll can't show new
-        // frames anyway). The shader only re-runs when the captured backdrop actually changed (see below).
-        int fps = Math.Min(120, GetRefreshRateHz());
-        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000.0 / fps) };
-        timer.Tick += (_, _) => CaptureGlassBackdrop();
-        return timer;
+        if (_backdropCapturer is null)
+        {
+            // Capture fast (up to the refresh rate, capped so a busy backdrop can't peg a core) while
+            // content moves behind the dock; the capturer itself backs off to a low idle rate when the
+            // backdrop is static. The GDI screen read-back is a fixed ~4 ms regardless of size, so it
+            // runs on its own thread and never blocks the magnification render loop.
+            int refresh = GetRefreshRateHz();
+            int fastFps = Math.Clamp(refresh, 60, 120);
+            const int idleFps = 15;
+            _glassProfiler?.Begin(fastFps, refresh, RenderCapability.Tier >> 16); // tier 0/1/2 = none/partial/full GPU
+            _backdropCapturer = new BackdropCapturer(Dispatcher, UploadGlassFrame, fastFps, idleFps, _glassProfiler);
+        }
+        PublishGlassRect();
+        _backdropCapturer.Start();
     }
 
     /// <summary>The display's vertical refresh rate in Hz (60 if unknown).</summary>
@@ -621,28 +641,73 @@ public partial class DockWindow : Window
         }
     }
 
-    /// <summary>Attaches the refraction pixel-shader + rim displacement map to the glass layer (once).</summary>
+    /// <summary>Attaches the two-pass separable-Gaussian refraction shader to the glass layer (once):
+    /// the inner Border refracts the backdrop at the rim and blurs it horizontally, the outer Border
+    /// blurs that result vertically — together a true 2-D Gaussian frost.</summary>
     private void EnsureGlassRefraction()
     {
         if (_glassRefractReady || !RefractionEffect.IsAvailable)
             return;
-        GlassRefract.Effect = new RefractionEffect
+
+        const double sigma = 1.4; // Gaussian blur sigma in device px (kernel reaches ~2.5x this)
+
+        // Pass 1 (inner): rim refraction + chromatic aberration + horizontal blur (saturation applied once, below).
+        // The rounded-rect rim is computed analytically in the shader (aspect-correct), so corner/bezel
+        // are passed as fractions of the bar height — kept in sync with the live bar by UpdateGlassShape.
+        _glassRefractInner = new RefractionEffect
         {
-            DisplacementMap = new ImageBrush(RefractionEffect.BuildRimMap(256, 256)) { Stretch = Stretch.Fill },
-            DistortionAmount = 0.22, // pronounced refraction at the rim
-            BlurRadius = 4.0,        // frosted-glass blur (device pixels; outer taps reach ~2x this)
+            DistortionAmount = 34.0, // px the sample is pulled inward at the rim
+            Aberration = 0.5,        // subtle rim colour fringing (0 = off)
+            BlurRadius = sigma,
+            BlurDirection = new Vector(1, 0),
         };
+        GlassRefract.Effect = _glassRefractInner;
+        // Pass 2 (outer): vertical blur only (no further displacement) + the vibrance boost + the rim
+        // specular (LightPosition / SpecularIntensity are driven per-frame from the cursor — see
+        // UpdateGlassSpecular). Shininess sets the glint tightness.
+        _glassSpecEffect = new RefractionEffect
+        {
+            DistortionAmount = 0.0,
+            BlurRadius = sigma,
+            BlurDirection = new Vector(0, 1),
+            Saturation = 1.8, // 180% — richer colour behind the glass
+            Shininess = 3.0, // broad lobe so the glint carries around the rim into the corners
+            RimSharpness = 4.0, // thin, border-like glint hugging the very edge
+            SpecularIntensity = GlassSpecAmbient,
+        };
+        GlassRefractOuter.Effect = _glassSpecEffect;
         _glassRefractReady = true;
+        UpdateGlassShape();
+    }
+
+    /// <summary>Keeps the shader's rounded-rect corner/bezel matched to the live bar. They're expressed
+    /// as fractions of the bar height so the corners stay circular (and DPI-independent) at any width;
+    /// only changes when the bar's thickness changes (icon size), so the DP-equality guard makes the
+    /// per-frame call from the render loop free.</summary>
+    private void UpdateGlassShape()
+    {
+        if (ViewModel is null || ViewModel.BarHeight <= 0)
+            return;
+        double cornerFrac = BarCornerRadius / ViewModel.BarHeight;
+        const double bezelFrac = 0.5; // rim band ≈ half the bar height
+        foreach (var fx in new[] { _glassRefractInner, _glassSpecEffect })
+        {
+            if (fx is null)
+                continue;
+            fx.CornerFraction = cornerFrac;
+            fx.BezelFraction = bezelFrac;
+        }
     }
 
     /// <summary>
-    /// Captures the screen region behind the bar (dock excluded) and feeds it to the shader. Polled at
-    /// 60 fps, but the captured pixels are diffed against the previous frame and the shader only re-runs
-    /// when they actually changed — so a static backdrop costs just a BitBlt + memcmp, no GPU work.
+    /// Publishes the current screen rect of the bar (physical px) to the background capturer. Runs on the
+    /// UI thread (PointToScreen / DPI are UI-only) each render frame and whenever the dock moves; the
+    /// capturer keeps grabbing that region off-thread until told otherwise.
     /// </summary>
-    private void CaptureGlassBackdrop()
+    private void PublishGlassRect()
     {
-        if (ViewModel is null || _hwnd == IntPtr.Zero || ViewModel.BarWidth <= 0 || ViewModel.BarHeight <= 0)
+        if (_backdropCapturer is null || ViewModel is null || _hwnd == IntPtr.Zero
+            || ViewModel.BarWidth <= 0 || ViewModel.BarHeight <= 0)
             return;
         try
         {
@@ -650,38 +715,52 @@ public partial class DockWindow : Window
             var topLeft = PointToScreen(new Point(ViewModel.BarLeft, ViewModel.BarTop)); // device px
             int w = (int)Math.Round(ViewModel.BarWidth * dpi.DpiScaleX);
             int h = (int)Math.Round(ViewModel.BarHeight * dpi.DpiScaleY);
-            if (w <= 0 || h <= 0)
-                return;
-
-            bool sizeChanged = _glassBitmap is null || w != _glassW || h != _glassH;
-            if (sizeChanged)
-            {
-                _glassW = w;
-                _glassH = h;
-                _glassBuf = new byte[w * 4 * h];
-                _glassPrev = new byte[w * 4 * h];
-                _glassBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgr32, null);
-                GlassBackdropBrush.ImageSource = _glassBitmap;
-            }
-
-            if (!WindowCapture.CaptureScreenRectInto((int)Math.Round(topLeft.X), (int)Math.Round(topLeft.Y), w, h, _glassBuf!))
-                return;
-
-            // Skip the upload + shader re-render when nothing behind the bar changed.
-            if (!sizeChanged && _glassBuf!.AsSpan().SequenceEqual(_glassPrev))
-            {
-                UpdateGlassClip();
-                return;
-            }
-
-            _glassBitmap!.WritePixels(new Int32Rect(0, 0, w, h), _glassBuf!, w * 4, 0);
-            (_glassPrev, _glassBuf) = (_glassBuf, _glassPrev); // remember this frame for the next diff
-            UpdateGlassClip();
+            if (w > 0 && h > 0)
+                _backdropCapturer.SetRect((int)Math.Round(topLeft.X), (int)Math.Round(topLeft.Y), w, h);
         }
         catch
         {
-            // PointToScreen before the window is sourced, or a transient capture failure — try again next tick.
+            // PointToScreen before the window is sourced — try again next frame.
         }
+    }
+
+    /// <summary>Uploads a changed backdrop frame into the shader's source bitmap. Invoked on the UI thread
+    /// by the background capturer (only when the pixels actually changed), so the shader re-runs no more
+    /// often than the backdrop truly moves. The bitmap is (re)sized to the captured frame.</summary>
+    private void UploadGlassFrame(byte[] buffer, int w, int h)
+    {
+        if (w <= 0 || h <= 0 || buffer.Length < w * 4 * h)
+            return;
+        if (_glassBitmap is null || w != _glassW || h != _glassH)
+        {
+            _glassW = w;
+            _glassH = h;
+            _glassBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgr32, null);
+            GlassBackdropBrush.ImageSource = _glassBitmap;
+        }
+        _glassBitmap.WritePixels(new Int32Rect(0, 0, w, h), buffer, w * 4, 0);
+        UpdateGlassClip();
+    }
+
+    /// <summary>
+    /// Drives the rim specular each render frame: anchors the (virtual) light above the cursor's X over
+    /// the bar so the bright glint sweeps along the rim as the pointer moves, and eases its intensity
+    /// between a faint resting sheen and a bright peak with hover (which also tracks magnification, since
+    /// the icons grow on hover). Only runs while Liquid Glass refraction is on screen.
+    /// </summary>
+    private void UpdateGlassSpecular()
+    {
+        if (_glassSpecEffect is null || ViewModel is null
+            || GlassRefractOuter.Visibility != Visibility.Visible || ViewModel.BarWidth <= 0)
+            return;
+
+        double uvX = Math.Clamp((_mouseX - ViewModel.BarLeft) / ViewModel.BarWidth, 0.0, 1.0);
+        _glassSpecEffect.LightPosition = new Point(uvX, GlassLightHeight);
+
+        double target = _hovering ? 1.0 : 0.0;
+        _glassSpecAmount += (target - _glassSpecAmount) * 0.2; // critically-ish damped ease
+        _glassSpecEffect.SpecularIntensity =
+            GlassSpecAmbient + (GlassSpecPeak - GlassSpecAmbient) * _glassSpecAmount;
     }
 
     /// <summary>Keeps the refraction clip geometry matched to the (magnifying) bar's rounded rect.</summary>
@@ -744,6 +823,8 @@ public partial class DockWindow : Window
         float corner = (float)(BarCornerRadius * dpi.DpiScaleX);
         _acrylic.SetBounds((int)Math.Round(topLeft.X), (int)Math.Round(topLeft.Y), w, h, corner, _hwnd);
         UpdateGlassClip(); // track the bar so the refraction clip stays rounded as it magnifies
+        // Tell the background capturer where the bar now sits (it grabs this region off the UI thread).
+        _backdropCapturer?.SetRect((int)Math.Round(topLeft.X), (int)Math.Round(topLeft.Y), w, h);
     }
 
     private (double Left, double Top) ComputePlacement()
@@ -1672,6 +1753,8 @@ public partial class DockWindow : Window
         double mouseMain = IsVerticalDock ? _mouseY : _mouseX;
         bool animating = ViewModel?.UpdateMagnification(mouseMain, _hovering && !_separatorResize) ?? false;
         SyncAcrylic();      // track the acrylic backdrop to the (magnifying) bar each frame
+        UpdateGlassShape();    // keep the shader's rounded-rect matched to the bar (cheap; DP-guarded)
+        UpdateGlassSpecular(); // sweep the rim glint toward the cursor and ramp it with hover
 
         // A shrunk-out (departed) item is removed off the render pass to avoid mutating Items mid-frame.
         if (ViewModel?.HasFinishedDeparting == true && !_finalizeScheduled)
@@ -2327,7 +2410,8 @@ public partial class DockWindow : Window
         _appRefreshTimer.Stop();
         _startWatchTimer.Stop();
         _pinCheckTimer.Stop();
-        _glassCaptureTimer?.Stop();
+        _backdropCapturer?.Stop(); // joins the capture thread before we tear down the profiler
+        _glassProfiler?.Dispose();
         SetCaptureExclusion(false); // don't leave the dock excluded from capture
         _pinWatcher?.Dispose();
         _minimizeHook.Dispose();

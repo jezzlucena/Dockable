@@ -81,8 +81,9 @@ public sealed class DockSettings
     /// <summary>Window minimize/restore animation style.</summary>
     public MinimizeEffect MinimizeEffect { get; set; } = MinimizeEffect.Genie;
 
-    /// <summary>Speed multiplier for the minimize/restore effect (1 = default; &gt;1 faster, &lt;1 slower).</summary>
-    public double EffectSpeed { get; set; } = 1.0;
+    /// <summary>Speed multiplier for the minimize/restore effect. The Preferences slider snaps to
+    /// Slow (0.01) … Default (0.5) … Fast (1.0); 0.5 is the middle "Default" tick.</summary>
+    public double EffectSpeed { get; set; } = 0.5;
 
     /// <summary>Base (un-magnified) icon size in DIPs.</summary>
     public double IconSize { get; set; } = 48;
