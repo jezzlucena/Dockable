@@ -56,6 +56,11 @@ public sealed class WindowThumbnailCache : IDisposable
         CaptureForeground();
     }
 
+    /// <summary>When set and returning true, the proactive refresh skips capturing — set by the dock while
+    /// a minimize/restore warp is in flight, so a full-window BitBlt (tens of ms for a 4K window, on the UI
+    /// thread) never lands mid-animation and stutters it. The warp already has the capture it needs.</summary>
+    public Func<bool>? ShouldSuspend { get; set; }
+
     /// <summary>The most recent capture taken while <paramref name="hwnd"/> was visible, if any.</summary>
     public WindowCapture.Result? TryGet(IntPtr hwnd)
         => _cache.TryGetValue(hwnd, out var result) ? result : null;
@@ -81,7 +86,12 @@ public sealed class WindowThumbnailCache : IDisposable
         _settleTimer.Start();
     }
 
-    private void CaptureForeground() => Capture(PInvoke.GetForegroundWindow());
+    private void CaptureForeground()
+    {
+        if (ShouldSuspend?.Invoke() == true)
+            return; // a warp is animating — don't stall its frames with a full-window BitBlt
+        Capture(PInvoke.GetForegroundWindow());
+    }
 
     private void Capture(HWND hwnd)
     {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -40,6 +41,9 @@ public sealed class ScaleAnimator : IMinimizeAnimator
     private bool _reverse;
     private Action? _onCompleted;
     private TimeSpan _startTime;
+    // Bumped whenever new content is shown on the shared overlay. A deferred restore hide (see
+    // CompleteRestoreHold) checks it so it never hides a frame that a newer animation now owns.
+    private int _playSeq;
 
     public void Prewarm() => EnsureOverlay();
 
@@ -66,7 +70,11 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _scale.CenterY = _src.Height / 2;
 
         ApplyFrame(reverse ? 1.0 : 0.0);
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
+
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.BeginSession($"Scale/{(reverse ? "restore" : "min")}", _src.Width, _src.Height, TargetTileWidth);
 
         if (_rendering is null)
         {
@@ -94,6 +102,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _scale.CenterY = _src.Height / 2;
 
         ApplyFrame(0.0); // un-scaled: the window exactly where it was
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
     }
 
@@ -107,7 +116,11 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _endScale = Math.Clamp(TargetTileWidth / Math.Max(_src.Width, 1), 0.04, 0.25);
 
         ApplyFrame(reverse ? 1.0 : 0.0);
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
+
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.BeginSession($"Scale/{(reverse ? "restore" : "min")}", _src.Width, _src.Height, TargetTileWidth);
 
         if (_rendering is null)
         {
@@ -125,17 +138,60 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         double duration = DurationMs / Math.Max(0.1, SpeedMultiplier);
         double progress = Math.Min(1.0, (now - _startTime).TotalMilliseconds / duration);
         double t = _reverse ? 1.0 - progress : progress;
+
+        long ts = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
         ApplyFrame(SmoothStep(t));
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.Frame(now, Stopwatch.GetElapsedTime(ts).TotalMilliseconds);
 
         if (progress >= 1.0)
         {
             CompositionTarget.Rendering -= _rendering!;
             _rendering = null;
-            _overlay!.Visibility = Visibility.Hidden;
+            MinimizeProfiler.EndSession();
             var done = _onCompleted;
             _onCompleted = null;
-            done?.Invoke();
+            if (_reverse)
+            {
+                // Restore: keep the final captured frame on the (topmost) overlay and let `done` bring the
+                // real window up beneath it, then hide the capture only once the window has painted — so
+                // there's no blank blink between the capture vanishing and the window appearing.
+                CompleteRestoreHold(done);
+            }
+            else
+            {
+                _overlay!.Visibility = Visibility.Hidden;
+                done?.Invoke();
+            }
         }
+    }
+
+    /// <summary>
+    /// Ends a restore by holding the final capture on the overlay while the real window is restored
+    /// underneath, then hiding the capture after the window has had a couple of frames to paint. The hide
+    /// is abandoned if a newer play has since taken over the shared overlay (tracked by <see cref="_playSeq"/>).
+    /// </summary>
+    private void CompleteRestoreHold(Action? done)
+    {
+        done?.Invoke(); // bring the real window up beneath the still-visible capture
+
+        int seq = _playSeq;
+        int ticks = 0;
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            if (_playSeq != seq) // a newer animation now owns the overlay — this hide is stale
+            {
+                CompositionTarget.Rendering -= handler!;
+                return;
+            }
+            if (++ticks < 2) // let the restored window paint for a frame or two first
+                return;
+            CompositionTarget.Rendering -= handler!;
+            if (_playSeq == seq)
+                _overlay!.Visibility = Visibility.Hidden;
+        };
+        CompositionTarget.Rendering += handler;
     }
 
     // t: 0 = full window at source, 1 = shrunk onto the dock tile.
@@ -165,6 +221,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
             return;
         CompositionTarget.Rendering -= _rendering;
         _rendering = null;
+        MinimizeProfiler.EndSession();
         var done = _onCompleted;
         _onCompleted = null;
         done?.Invoke();
@@ -182,7 +239,11 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         group.Children.Add(_translate);
 
         _image = new Image { Stretch = Stretch.Fill, RenderTransform = group };
-        RenderOptions.SetBitmapScalingMode(_image, BitmapScalingMode.HighQuality);
+        // LowQuality (bilinear) rather than HighQuality (Fant): the image is resampled every frame as it
+        // scales, and multi-tap Fant downsampling of a full-window bitmap per frame is far more expensive.
+        // During a fast shrink-to-tile the difference is imperceptible, and it lands tiny (or, on restore,
+        // is immediately replaced by the real window), so bilinear is the right trade for smooth frames.
+        RenderOptions.SetBitmapScalingMode(_image, BitmapScalingMode.LowQuality);
 
         var canvas = new Canvas();
         canvas.Children.Add(_image);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -69,9 +70,19 @@ public sealed class GenieAnimator : IMinimizeAnimator
 
     private Window? _overlay;
     private MeshGeometry3D? _mesh;
+    private Point3DCollection? _positions; // == _mesh.Positions; detached while bulk-mutated each frame
     private ImageBrush? _brush;
     private OrthographicCamera? _camera;
     private EventHandler? _rendering;
+
+    // Per-play precomputed invariants (depend only on _src/_target/_leadFromTop, fixed across a play's
+    // frames): source vertex coords, the black-hole fall-in lag, and the genie per-row lead/origin-Y.
+    // Recomputing these (esp. the per-vertex sqrt distance) every frame was pure waste.
+    private int _vertexCount;
+    private double[]? _ox, _oy;          // source vertex positions (overlay-local DIP)
+    private double[]? _lag;              // black-hole normalized distance-to-target (0 near … 1 far)
+    private double[]? _leadRow;          // genie per-row flow lead (0 = leads, 1 = trails)
+    private double[]? _origYRow;         // genie per-row source Y
 
     // Current animation state.
     private Rect _src;
@@ -85,6 +96,9 @@ public sealed class GenieAnimator : IMinimizeAnimator
     private StyleParams _params = ParamsFor(GenieStyle.Suck); // resolved at the start of each play
     private Action? _onCompleted;
     private TimeSpan _startTime;
+    // Bumped whenever new content is shown on the shared overlay. A deferred restore hide (see
+    // CompleteRestoreHold) checks it so it never hides a frame that a newer animation now owns.
+    private int _playSeq;
 
     /// <summary>Builds the reusable overlay ahead of time so the first genie is as fast as the rest.</summary>
     public void Prewarm() => EnsureOverlay();
@@ -106,8 +120,13 @@ public sealed class GenieAnimator : IMinimizeAnimator
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
 
+        PreparePlay();
         UpdateMesh(reverse ? 1.0 : 0.0);
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
+
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.BeginSession($"{Style}/{(reverse ? "restore" : "min")}", _src.Width, _src.Height, TargetTileWidth);
 
         if (_rendering is null)
         {
@@ -131,7 +150,9 @@ public sealed class GenieAnimator : IMinimizeAnimator
         _params = ParamsFor(Style);
         _onCompleted = null;
 
+        PreparePlay();
         UpdateMesh(0.0); // un-warped: the window exactly where it was
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
     }
 
@@ -147,8 +168,13 @@ public sealed class GenieAnimator : IMinimizeAnimator
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
 
+        PreparePlay();
         UpdateMesh(reverse ? 1.0 : 0.0);
+        _playSeq++;
         _overlay!.Visibility = Visibility.Visible;
+
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.BeginSession($"{Style}/{(reverse ? "restore" : "min")}", _src.Width, _src.Height, TargetTileWidth);
 
         if (_rendering is null)
         {
@@ -166,17 +192,60 @@ public sealed class GenieAnimator : IMinimizeAnimator
         double duration = _params.Duration / Math.Max(0.1, SpeedMultiplier);
         double progress = Math.Min(1.0, (now - _startTime).TotalMilliseconds / duration);
         double warp = _reverse ? 1.0 - progress : progress;
+
+        long ts = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
         UpdateMesh(warp);
+        if (MinimizeProfiler.Enabled)
+            MinimizeProfiler.Frame(now, Stopwatch.GetElapsedTime(ts).TotalMilliseconds);
 
         if (progress >= 1.0)
         {
             CompositionTarget.Rendering -= _rendering!;
             _rendering = null;
-            _overlay!.Visibility = Visibility.Hidden;
+            MinimizeProfiler.EndSession();
             var done = _onCompleted;
             _onCompleted = null;
-            done?.Invoke();
+            if (_reverse)
+            {
+                // Restore: keep the final captured frame on the (topmost) overlay and let `done` bring the
+                // real window up beneath it, then hide the capture only once the window has painted — so
+                // there's no blank blink between the capture vanishing and the window appearing.
+                CompleteRestoreHold(done);
+            }
+            else
+            {
+                _overlay!.Visibility = Visibility.Hidden;
+                done?.Invoke();
+            }
         }
+    }
+
+    /// <summary>
+    /// Ends a restore by holding the final capture on the overlay while the real window is restored
+    /// underneath, then hiding the capture after the window has had a couple of frames to paint. The hide
+    /// is abandoned if a newer play has since taken over the shared overlay (tracked by <see cref="_playSeq"/>).
+    /// </summary>
+    private void CompleteRestoreHold(Action? done)
+    {
+        done?.Invoke(); // bring the real window up beneath the still-visible capture
+
+        int seq = _playSeq;
+        int ticks = 0;
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            if (_playSeq != seq) // a newer animation now owns the overlay — this hide is stale
+            {
+                CompositionTarget.Rendering -= handler!;
+                return;
+            }
+            if (++ticks < 2) // let the restored window paint for a frame or two first
+                return;
+            CompositionTarget.Rendering -= handler!;
+            if (_playSeq == seq)
+                _overlay!.Visibility = Visibility.Hidden;
+        };
+        CompositionTarget.Rendering += handler;
     }
 
     /// <summary>
@@ -190,6 +259,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
             return;
         CompositionTarget.Rendering -= _rendering;
         _rendering = null;
+        MinimizeProfiler.EndSession();
         var done = _onCompleted;
         _onCompleted = null;
         done?.Invoke();
@@ -201,6 +271,15 @@ public sealed class GenieAnimator : IMinimizeAnimator
             return;
 
         _mesh = BuildMesh();
+        _positions = _mesh.Positions; // held so we can detach/reattach it cheaply each frame
+
+        _vertexCount = (Columns + 1) * (Rows + 1);
+        _ox = new double[_vertexCount];
+        _oy = new double[_vertexCount];
+        _lag = new double[_vertexCount];
+        _leadRow = new double[Rows + 1];
+        _origYRow = new double[Rows + 1];
+
         _brush = new ImageBrush { Stretch = Stretch.Fill };
         var model = new GeometryModel3D(_mesh, new DiffuseMaterial(_brush));
 
@@ -299,6 +378,46 @@ public sealed class GenieAnimator : IMinimizeAnimator
         return mesh;
     }
 
+    /// <summary>
+    /// Precomputes everything that stays fixed for the whole play (source vertex coords, the black-hole
+    /// fall-in lag with its per-vertex distance, and the genie per-row lead/origin) so the per-frame
+    /// <see cref="UpdateMesh"/> only does the cheap warp interpolation — no <c>sqrt</c> per vertex per
+    /// frame. Call after <c>_src</c>/<c>_target</c>/<c>_leadFromTop</c> are set for this play.
+    /// </summary>
+    private void PreparePlay()
+    {
+        var src = _src;
+        double tx = _target.X, ty = _target.Y;
+        int rowStride = Columns + 1;
+
+        for (int j = 0; j <= Rows; j++)
+        {
+            double v = (double)j / Rows;
+            double rowY = src.Top + v * src.Height;
+            _origYRow![j] = rowY;
+            // The edge nearest the dock leads the flow: top rows (v=0) for a top-anchored dock, bottom
+            // rows (v=1) otherwise.
+            _leadRow![j] = _leadFromTop ? v : 1 - v;
+            for (int i = 0; i <= Columns; i++)
+            {
+                int idx = j * rowStride + i;
+                _ox![idx] = src.Left + (double)i / Columns * src.Width;
+                _oy![idx] = rowY;
+            }
+        }
+
+        // Black-hole fall-in lag: normalized distance to the target (0 at the target … 1 at the farthest
+        // corner), so the vertices nearest the target arrive first. Constant across the play's frames.
+        double maxDist = 1e-3;
+        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Top - ty));
+        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Top - ty));
+        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Bottom - ty));
+        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Bottom - ty));
+        double invMax = 1.0 / maxDist;
+        for (int idx = 0; idx < _vertexCount; idx++)
+            _lag![idx] = Clamp01(Distance(_ox![idx] - tx, _oy![idx] - ty) * invMax);
+    }
+
     /// <summary>Recomputes vertex positions for a given warp amount, per the active style.</summary>
     private void UpdateMesh(double warp)
     {
@@ -316,39 +435,22 @@ public sealed class GenieAnimator : IMinimizeAnimator
     private void UpdateMeshBlackHole(double warp)
     {
         var mesh = _mesh!;
-        var src = _src;
-        var p = _params;
-        var positions = mesh.Positions;
-        int rowStride = Columns + 1;
-        double tx = _target.X, ty = _target.Y;
+        var positions = _positions!;
+        double tx = _target.X, ty = _target.Y, h = _height;
+        double stagger = _params.Stagger;
+        double baseProgress = warp * (1 + stagger);
 
-        // Normalize the per-vertex "fall-in" stagger by the farthest source corner from the target.
-        double maxDist = 1e-3;
-        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Top - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Top - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Left - tx, src.Bottom - ty));
-        maxDist = Math.Max(maxDist, Distance(src.Right - tx, src.Bottom - ty));
-
-        for (int j = 0; j <= Rows; j++)
+        // Detach the collection so the 637 element writes don't each propagate a change notification up
+        // to the mesh; reattach once at the end for a single re-realization of the vertex buffer.
+        mesh.Positions = null;
+        for (int idx = 0; idx < _vertexCount; idx++)
         {
-            double v = (double)j / Rows;
-            for (int i = 0; i <= Columns; i++)
-            {
-                double u = (double)i / Columns;
-                double ox = src.Left + u * src.Width;
-                double oy = src.Top + v * src.Height;
-
-                // Normalized distance to the target (0 at the target … 1 at the farthest corner). It's
-                // subtracted from the progress, so the farther a vertex is the more it lags — i.e. the
-                // vertices nearest the target arrive first.
-                double lag = Clamp01(Distance(ox - tx, oy - ty) / maxDist);
-                double e = SmoothStep(Clamp01(warp * (1 + p.Stagger) - lag * p.Stagger));
-
-                double x = Lerp(ox, tx, e); // straight pull toward the thumbnail's spot
-                double y = Lerp(oy, ty, e);
-                positions[j * rowStride + i] = new Point3D(x, _height - y, 0);
-            }
+            double e = SmoothStep(Clamp01(baseProgress - _lag![idx] * stagger));
+            double x = Lerp(_ox![idx], tx, e); // straight pull toward the thumbnail's spot
+            double y = Lerp(_oy![idx], ty, e);
+            positions[idx] = new Point3D(x, h - y, 0);
         }
+        mesh.Positions = positions;
     }
 
     /// <summary>
@@ -358,25 +460,26 @@ public sealed class GenieAnimator : IMinimizeAnimator
     private void UpdateMeshGenie(double warp)
     {
         var mesh = _mesh!;
+        var positions = _positions!;
         var src = _src;
         var target = _target;
         var p = _params;
-        var positions = mesh.Positions;
         double srcCenterX = src.Left + src.Width / 2;
         int rowStride = Columns + 1;
         double neckWidth = TargetTileWidth; // shrink only to the tile width (lands as the thumbnail)
+        double h = _height;
+        double baseProgress = warp * (1 + p.Stagger);
+        double invShapeEnd = 1.0 / p.ShapeEnd;
+        double invDescendSpan = 1.0 / (1 - p.DescendStart);
 
+        mesh.Positions = null; // detach for cheap bulk mutation (see UpdateMeshBlackHole)
         for (int j = 0; j <= Rows; j++)
         {
-            double v = (double)j / Rows;
-            // The edge nearest the dock leads the flow: the top rows (v=0) for a top-anchored dock,
-            // the bottom rows (v=1) otherwise.
-            double lead = _leadFromTop ? v : 1 - v;
-            double lp = Clamp01(warp * (1 + p.Stagger) - lead * p.Stagger);
+            double lp = Clamp01(baseProgress - _leadRow![j] * p.Stagger);
             // Decouple the horizontal shaping from the vertical descent: the funnel/pinch front-loads
             // (done by ShapeEnd) so the neck forms early, then the drop happens (starting at DescendStart).
-            double eShape = SmoothStep(Clamp01(lp / p.ShapeEnd));
-            double eDescend = SmoothStep(Clamp01((lp - p.DescendStart) / (1 - p.DescendStart)));
+            double eShape = SmoothStep(Clamp01(lp * invShapeEnd));
+            double eDescend = SmoothStep(Clamp01((lp - p.DescendStart) * invDescendSpan));
 
             double rowCenterX = Lerp(srcCenterX, target.X, eShape);
             // Width tapers from the body to the neck; the bulge term bellies the mid-neck out (smoke
@@ -384,17 +487,17 @@ public sealed class GenieAnimator : IMinimizeAnimator
             double baseWidth = Lerp(src.Width, neckWidth, eShape);
             double bulge = p.WidthBulge * src.Width * Math.Sin(Math.PI * eShape);
             double rowWidth = Math.Max(neckWidth, baseWidth + bulge);
-            double origY = src.Top + v * src.Height;
-            double y = Lerp(origY, target.Y, eDescend);
+            // 3D Y is up; screen Y is down — flip into the orthographic camera's space.
+            double yUp = h - Lerp(_origYRow![j], target.Y, eDescend);
 
+            int rowBase = j * rowStride;
             for (int i = 0; i <= Columns; i++)
             {
-                double u = (double)i / Columns;
-                double x = rowCenterX + (u - 0.5) * rowWidth;
-                // 3D Y is up; screen Y is down — flip into the orthographic camera's space.
-                positions[j * rowStride + i] = new Point3D(x, _height - y, 0);
+                double x = rowCenterX + ((double)i / Columns - 0.5) * rowWidth;
+                positions[rowBase + i] = new Point3D(x, yUp, 0);
             }
         }
+        mesh.Positions = positions;
     }
 
     /// <summary>The tile is above the window's center → the dock is on the top edge, so lead from the top.</summary>

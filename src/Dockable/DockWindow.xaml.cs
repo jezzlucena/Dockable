@@ -290,6 +290,7 @@ public partial class DockWindow : Window
 
         _genie.Prewarm(); // build the reusable overlays now so the first minimize is instant
         _scale.Prewarm();
+        _thumbnails.ShouldSuspend = () => _busy.Count > 0; // don't capture mid-warp (it stutters the frames)
         _thumbnails.Start();
         _minimizeHook.WindowMinimizing += OnWindowMinimizing;
         _minimizeHook.WindowUnminimized += OnWindowUnminimized;
@@ -1735,6 +1736,14 @@ public partial class DockWindow : Window
 
     private void OnRendering(object? sender, EventArgs e)
     {
+        // While a minimize/restore warp is animating, pause the dock's own per-frame work (magnification,
+        // acrylic tracking, glass shader updates). It shares CompositionTarget.Rendering with the warp, and
+        // on a restore the click leaves the cursor over the dock — so without this, this loop would run
+        // every frame alongside the warp and starve it of render time (measurably fewer warp frames, hence
+        // the restore-only stutter). Stays hooked; the next tick after the warp frees _busy resumes it.
+        if (_busy.Count > 0)
+            return;
+
         // Track hover from the real cursor position rather than trusting WPF's MouseLeave: on this
         // transparent layered window the cursor crossing a fully-transparent overflow pixel spuriously
         // fires MouseLeave, which would drop _hovering and make magnification stutter. The window's

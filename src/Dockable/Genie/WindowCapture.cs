@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -77,6 +77,7 @@ public static class WindowCapture
 
     public static unsafe Result? Capture(IntPtr hwnd)
     {
+        long startTs = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
         var window = (HWND)hwnd;
 
         // The DWM "extended frame bounds" exclude the drop shadow and the invisible resize border, so
@@ -123,6 +124,8 @@ public static class WindowCapture
                     return null;
 
                 var bitmap = BuildWindowBitmap(bits, w, h, radiusPx);
+                if (MinimizeProfiler.Enabled)
+                    MinimizeProfiler.Mark("capture", Stopwatch.GetElapsedTime(startTs).TotalMilliseconds, w, h);
                 return new Result(bitmap, new Int32Rect(rect.left, rect.top, w, h));
             }
             finally
@@ -158,14 +161,19 @@ public static class WindowCapture
     private static unsafe BitmapSource BuildWindowBitmap(void* bits, int w, int h, int radius)
     {
         int stride = w * 4;
-        var buf = new byte[stride * h];
-        Marshal.Copy((IntPtr)bits, buf, 0, buf.Length);
 
-        for (int i = 3; i < buf.Length; i += 4)
-            buf[i] = 255; // opaque window body
+        // The CreateDIBSection memory is directly writable, so set the alpha and carve the corners IN PLACE
+        // and copy once (WritePixels below) — rather than copying into a managed buffer, editing it, and
+        // copying again. That halves the per-capture memory traffic (~10 MB saved for a 4K window), which
+        // is the bulk of the build cost. BitBlt leaves the 4th (alpha) byte unspecified; OR the whole body
+        // opaque (JIT-vectorizable over 32-bit pixels; alpha is the high byte in little-endian BGRA).
+        var pixels = new Span<uint>(bits, w * h);
+        for (int i = 0; i < pixels.Length; i++)
+            pixels[i] |= 0xFF000000u;
 
         if (radius > 0)
         {
+            byte* buf = (byte*)bits;
             CarveCorner(buf, stride, radius, 0, 0, radius, radius);                 // top-left
             CarveCorner(buf, stride, radius, w - radius, 0, w - radius, radius);     // top-right
             CarveCorner(buf, stride, radius, 0, h - radius, radius, h - radius);     // bottom-left
@@ -173,14 +181,14 @@ public static class WindowCapture
         }
 
         var bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
-        bitmap.WritePixels(new Int32Rect(0, 0, w, h), buf, stride, 0);
+        bitmap.WritePixels(new Int32Rect(0, 0, w, h), (IntPtr)bits, stride * h, stride);
         bitmap.Freeze();
         return bitmap;
     }
 
     /// <summary>Sets the alpha of a corner's r×r box to a quarter-disc centred at
     /// (<paramref name="cx"/>, <paramref name="cy"/>), with a 1px antialiased edge.</summary>
-    private static void CarveCorner(byte[] buf, int stride, int r, int x0, int y0, double cx, double cy)
+    private static unsafe void CarveCorner(byte* buf, int stride, int r, int x0, int y0, double cx, double cy)
     {
         for (int y = y0; y < y0 + r; y++)
         for (int x = x0; x < x0 + r; x++)
