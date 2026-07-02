@@ -148,7 +148,9 @@ public sealed class RefractionEffect : ShaderEffect
     }
 
     /// <summary>Rim specular highlight strength (0 = none). Additive white glint at the rim, brightest
-    /// where the surface faces <see cref="LightPosition"/>. Set on the final pass only.</summary>
+    /// where the surface faces <see cref="LightPosition"/>, with a matching counter-glint lit from the
+    /// point-reflected position (1 - LightPosition) — the opposite rim at the horizontally mirrored X.
+    /// Set on the final pass only.</summary>
     public double SpecularIntensity
     {
         get => (double)GetValue(SpecularIntensityProperty);
@@ -292,13 +294,18 @@ float4 main(float2 uv : TEXCOORD) : COLOR
     float luma = dot(c.rgb, float3(0.299, 0.587, 0.114));
     c.rgb = lerp(luma.xxx, c.rgb, saturation);
 
-    // Rim specular: light the outward normal (n) where it faces lightPos. Added crisp on top of the
-    // blurred glass; the rim mask m (already 0→1) is raised to rimSharp so the glint collapses to a thin
-    // line hugging the edge — like a glowing border. specInt = 0 (the refraction pass) makes it a no-op.
+    // Rim specular: light the outward normal (n) where it faces lightPos, plus a second counter-glint
+    // from a bounce light point-reflected through the bar's centre (1 - lightPos, i.e. below the bar at
+    // the horizontally mirrored X) — so a glint on the top-left rim pairs with one on the bottom-right.
+    // Both are added crisp on top of the blurred glass; the rim mask m (already 0→1) is raised to
+    // rimSharp so the glints collapse to thin lines hugging the edge — like a glowing border.
+    // specInt = 0 (the refraction pass) makes it a no-op.
     float edge = pow(saturate(m), rimSharp);
-    float2 ldir = normalize(lightPos - uv);
-    float ndl = saturate(dot(n, ldir));
-    c.rgb += pow(ndl, shininess) * edge * specInt;
+    float2 ldir  = normalize(lightPos - uv);
+    float2 ldir2 = normalize((1.0 - lightPos) - uv);
+    float spec = pow(saturate(dot(n, ldir)), shininess)
+               + pow(saturate(dot(n, ldir2)), shininess);
+    c.rgb += spec * edge * specInt;
     return c;
 }";
 }

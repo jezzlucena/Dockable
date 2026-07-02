@@ -51,6 +51,10 @@ public static class Taskbar
     /// </summary>
     public static void CaptureOriginalState() => _originalAutoHide ??= IsAutoHide();
 
+    /// <summary>The captured pre-launch auto-hide state (null until <see cref="CaptureOriginalState"/>
+    /// runs) — handed to the out-of-process watchdog so it can restore after a force-kill.</summary>
+    public static bool? OriginalAutoHide => _originalAutoHide;
+
     /// <summary>Restores the taskbar to the state captured by <see cref="CaptureOriginalState"/>.</summary>
     public static void Restore()
     {
@@ -71,9 +75,15 @@ public static class Taskbar
                 SetState(autoHide: false);
                 break;
             case TaskbarVisibility.Never:
-                // Disable auto-hide first so the OS won't re-reveal on hover, then hide the windows.
-                SetState(autoHide: false);
+                // Auto-hide FIRST: an always-on-top taskbar keeps its work-area reservation even
+                // while SW_HIDDEN, so the shell would stack the dock's AppBar strip on top of a
+                // ghost taskbar-height strip — maximized windows then float a taskbar-height gap
+                // above the dock. Auto-hide reserves nothing; SW_HIDE then keeps it off-screen.
+                SetState(autoHide: true);
                 Hide();
+                // Explorer processes the state change asynchronously and re-shows the tray windows
+                // while applying it, stomping the SW_HIDE above — re-assert once it settles.
+                Task.Delay(750).ContinueWith(_ => Hide());
                 break;
             default: // Auto
                 EnsureTrayWindowsShown();

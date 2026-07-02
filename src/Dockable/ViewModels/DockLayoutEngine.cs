@@ -238,7 +238,10 @@ public sealed class DockLayoutEngine
             double cellCross = _baseSize * item.CurrentScale;       // depth cell (always full)
             // Separators get a fixed clickable extent that overhangs the gaps; icons fill their cell.
             double renderAlong = (item.IsSeparator ? SeparatorHitArea : cellAlong * IconFill) * appear;
-            double renderCross = cellCross * IconFill * appear; // separators match the non-magnified icon depth
+            // Icons render at IconFill of their depth cell; separators overshoot the cell by VPad so
+            // the divider line reads bar-tall, stopping half a VPad short of each bar edge (the
+            // nearDepth below centers any render depth on the cell, so this stays centered).
+            double renderCross = (item.IsSeparator ? cellCross + VPad : cellCross * IconFill) * appear;
             double targetMain = along + (cellAlong * appear - renderAlong) / 2; // center the icon within its (collapsing) cell
 
             double mainPos;

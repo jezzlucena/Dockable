@@ -51,6 +51,32 @@
                            Cursor="Hand"
                            TextTrimming="CharacterEllipsis"
                            MouseLeftButtonUp="AppName_Click" />
+
+                <!-- The focused app's in-window menu ("File", "Edit", …) mirrored as global menus.
+                     Win32-menu apps get their real dropdown hosted under the label; UIA-only apps
+                     expand their own menu in place. -->
+                <ItemsControl ItemsSource="{Binding MenuEntries}"
+                              VerticalAlignment="Center"
+                              Margin="18,0,0,0"
+                              IsTabStop="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Label}"
+                                       Foreground="{DynamicResource MenuTextBrush}"
+                                       FontSize="13"
+                                       VerticalAlignment="Center"
+                                       Background="Transparent"
+                                       Cursor="Hand"
+                                       Margin="0,0,18,0"
+                                       MouseLeftButtonUp="AppMenu_Click" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
             </StackPanel>
 
             <!-- Trailing: status cluster (quick-settings, keyboard, clock; tray added in Phase C). -->
@@ -120,11 +146,16 @@
                            Margin="0,0,16,0"
                            MouseLeftButtonUp="Keyboard_Click" />
 
+                <!-- Clock — click to open the Windows "Date & time" settings. -->
                 <TextBlock x:Name="ClockText"
                            Text="{Binding TimeText}"
                            Foreground="{DynamicResource MenuTextBrush}"
                            FontSize="12"
-                           VerticalAlignment="Center" />
+                           VerticalAlignment="Center"
+                           Background="Transparent"
+                           Cursor="Hand"
+                           ToolTip="Date &amp; time settings"
+                           MouseLeftButtonUp="Clock_Click" />
             </StackPanel>
         </Grid>
     </Border>

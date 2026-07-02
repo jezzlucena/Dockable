@@ -44,6 +44,11 @@ public partial class App : Application
         // Remember the taskbar's state now, before we change it, so we can restore it exactly.
         Taskbar.CaptureOriginalState();
 
+        // Out-of-process safety net: a hidden watchdog (different image name, so a kill-by-name of
+        // Dockable can't take it down too) restores that state even when we're force-killed and none
+        // of our exit/crash handlers get to run. It exits on its own once we're gone.
+        TaskbarWatchdog.Start(Taskbar.OriginalAutoHide ?? false);
+
         try
         {
             DockViewModel = new DockViewModel(SettingsStore);

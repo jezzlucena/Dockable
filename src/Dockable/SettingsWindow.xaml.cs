@@ -36,10 +36,13 @@ public partial class SettingsWindow : Window
     private readonly Action<TaskbarVisibility> _setTaskbarVisibility;
     private readonly Action<GlassEffect> _setGlassEffect;
     private readonly Action<bool> _setShowMenuBar;
+    private readonly Action _applyGlass;
+    private readonly Action<PerformanceMode> _setPerformanceMode;
     private bool _initializing;
 
     public SettingsWindow(DockViewModel vm, Action<DockTheme> setTheme, Action<DockEdge> setEdge,
-        Action<TaskbarVisibility> setTaskbarVisibility, Action<GlassEffect> setGlassEffect, Action<bool> setShowMenuBar)
+        Action<TaskbarVisibility> setTaskbarVisibility, Action<GlassEffect> setGlassEffect, Action<bool> setShowMenuBar,
+        Action applyGlass, Action<PerformanceMode> setPerformanceMode)
     {
         _vm = vm;
         _setTheme = setTheme;
@@ -47,9 +50,17 @@ public partial class SettingsWindow : Window
         _setTaskbarVisibility = setTaskbarVisibility;
         _setGlassEffect = setGlassEffect;
         _setShowMenuBar = setShowMenuBar;
+        _applyGlass = applyGlass;
+        _setPerformanceMode = setPerformanceMode;
         _initializing = true; // set before InitializeComponent so initial events no-op
         InitializeComponent();
         Icon = AppIcon.Large;
+
+        // About page: app icon + version (major.minor.build).
+        AboutAppImage.Source = AppIcon.Large;
+        var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        string verDisplay = ver is null ? "1.0.0" : $"{ver.Major}.{ver.Minor}.{ver.Build}";
+        AboutVersionText.Text = string.Format(Loc.T("About_Version"), verDisplay);
 
         var s = vm.Settings;
 
@@ -72,6 +83,7 @@ public partial class SettingsWindow : Window
         PositionCombo.SelectedIndex = (int)s.Edge;   // DockEdge: Bottom, Left, Right, Top (matches combo order)
         GlassEffectCombo.SelectedIndex = (int)s.GlassEffect; // GlassEffect: Simple, Acrylic, LiquidGlass
         MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect; // MinimizeEffect: Suck, Scale, Genie
+        PerformanceCombo.SelectedIndex = (int)s.PerformanceMode; // PerformanceMode: Auto, Quality, Performance
         EffectSpeedSlider.Value = SpeedToStep(s.EffectSpeed);
         OpenAtLoginSwitch.IsChecked = StartupManager.IsEnabled(StartupEntryName);
         IndicatorsSwitch.IsChecked = s.ShowRunningIndicators;
@@ -80,27 +92,55 @@ public partial class SettingsWindow : Window
         ShowMenuBarSwitch.IsChecked = s.ShowMenuBar;
         TaskbarCombo.SelectedIndex = (int)s.TaskbarVisibility; // Always, Auto, Never (matches combo order)
 
+        // Liquid Glass tuning sliders (clamped to each slider's range).
+        GlassBlurSlider.Value = Math.Clamp(s.GlassBlurRadius, GlassBlurSlider.Minimum, GlassBlurSlider.Maximum);
+        GlassDistortionSlider.Value = Math.Clamp(s.GlassDistortion, GlassDistortionSlider.Minimum, GlassDistortionSlider.Maximum);
+        GlassTintSlider.Value = Math.Clamp(s.GlassTintOpacity, GlassTintSlider.Minimum, GlassTintSlider.Maximum);
+        GlassSaturationSlider.Value = Math.Clamp(s.GlassSaturation, GlassSaturationSlider.Minimum, GlassSaturationSlider.Maximum);
+        GlassAberrationSlider.Value = Math.Clamp(s.GlassAberration, GlassAberrationSlider.Minimum, GlassAberrationSlider.Maximum);
+        GlassRimSlider.Value = Math.Clamp(s.GlassRimHighlight, GlassRimSlider.Minimum, GlassRimSlider.Maximum);
+
         _initializing = false;
 
-        // Resizable, but never wider/taller than its content nor larger than the screen; it scrolls when
-        // the window is shorter than the content. Width is content-driven (no horizontal resize/clip);
-        // MaxHeight starts at the viewport so SizeToContent can't overflow it, then is locked to the
-        // settled content height in OnPrefsLoaded.
+        ShowSection("General");        // default page + sidebar selection
+        UpdateGlassParamsEnabled();    // grey the tuning sliders unless Liquid Glass is selected
+
+        // The default size (740x560) may exceed a small display — shrink to fit the work area.
         var work = SystemParameters.WorkArea;
-        Width = Math.Min(Width, work.Width);
-        MinWidth = MaxWidth = Width;
-        MaxHeight = work.Height;
-        Loaded += OnPrefsLoaded;
+        if (Width > work.Width) Width = work.Width;
+        if (Height > work.Height) Height = work.Height;
     }
 
-    private void OnPrefsLoaded(object sender, RoutedEventArgs e)
+    // --- Sidebar navigation ---
+
+    private void NavItem_Click(object sender, MouseButtonEventArgs e)
+        => ShowSection((string)((FrameworkElement)sender).Tag);
+
+    /// <summary>Navigates the window to a section by id (e.g. from the dock's "About Dockable" menu).</summary>
+    public void NavigateTo(string section) => ShowSection(section);
+
+    /// <summary>Shows the page for <paramref name="id"/> (General / DockMenuBar / LiquidGlass / About)
+    /// and highlights its sidebar row (accent fill + white label), like macOS System Settings.</summary>
+    private void ShowSection(string id)
     {
-        // The window has sized to its content (capped to the work area). Lock that as the max height,
-        // then switch to manual sizing so the user can shrink it (content scrolls) but never grow it
-        // past its content or beyond the screen.
-        SizeToContent = SizeToContent.Manual;
-        MaxHeight = ActualHeight;
+        PageGeneral.Visibility = id == "General" ? Visibility.Visible : Visibility.Collapsed;
+        PageDockMenuBar.Visibility = id == "DockMenuBar" ? Visibility.Visible : Visibility.Collapsed;
+        PageLiquidGlass.Visibility = id == "LiquidGlass" ? Visibility.Visible : Visibility.Collapsed;
+        PageAbout.Visibility = id == "About" ? Visibility.Visible : Visibility.Collapsed;
+
+        SetNavSelected(NavGeneral, NavGeneralLabel, id == "General");
+        SetNavSelected(NavDockMenuBar, NavDockMenuBarLabel, id == "DockMenuBar");
+        SetNavSelected(NavLiquidGlass, NavLiquidGlassLabel, id == "LiquidGlass");
+        SetNavSelected(NavAbout, NavAboutLabel, id == "About");
     }
+
+    private static void SetNavSelected(System.Windows.Controls.Border row, TextBlock label, bool selected)
+    {
+        row.Background = selected ? RingBrush : Brushes.Transparent;
+        label.Foreground = selected ? Brushes.White : NavTextBrush;
+    }
+
+    private static readonly Brush NavTextBrush = FrozenBrush("#1D1D1F");
 
     // ResizeMode=CanResize adds a maximize box; remove it so the window can't jump to a corner — its
     // size is already capped to its content and the viewport.
@@ -249,9 +289,107 @@ public partial class SettingsWindow : Window
 
     private void GlassEffectCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateGlassParamsEnabled();
         if (_initializing)
             return;
         _setGlassEffect((GlassEffect)GlassEffectCombo.SelectedIndex); // 0 Simple, 1 Acrylic, 2 LiquidGlass
+    }
+
+    // The Liquid Glass tuning UI is gated twice: the sliders sit behind a one-way "Advanced" reveal,
+    // and the whole affordance (divider + link + sliders) only exists while Liquid Glass is selected.
+    private void UpdateGlassParamsEnabled()
+    {
+        bool liquid = GlassEffectCombo.SelectedIndex == (int)GlassEffect.LiquidGlass;
+        GlassParamsPanel.IsEnabled = liquid;
+        if (!liquid)
+            GlassParamsPanel.Visibility = Visibility.Collapsed; // leaving Liquid Glass re-collapses Advanced
+        GlassAdvancedDivider.Visibility = liquid ? Visibility.Visible : Visibility.Collapsed;
+        // The reveal link shows only while the sliders are still collapsed; once expanded there is no
+        // collapse affordance (switch effects or reopen Preferences to reset).
+        GlassAdvancedLink.Visibility = liquid && GlassParamsPanel.Visibility != Visibility.Visible
+            ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // One-way reveal: expands the Advanced tuning sliders and retires the link.
+    private void GlassAdvanced_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        GlassParamsPanel.Visibility = Visibility.Visible;
+        GlassAdvancedLink.Visibility = Visibility.Collapsed;
+    }
+
+    // --- Liquid Glass tuning ---
+    // Each writes its setting, persists, and pushes the change into the live shader via the callback.
+
+    private void GlassBlurSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassBlurRadius = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    private void GlassDistortionSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassDistortion = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    private void GlassTintSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassTintOpacity = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    private void GlassSaturationSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassSaturation = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    private void GlassAberrationSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassAberration = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    private void GlassRimSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_initializing) return;
+        _vm.Settings.GlassRimHighlight = e.NewValue;
+        ApplyGlassAndSave();
+    }
+
+    // Restores the six Liquid Glass parameters to their defaults (from a fresh DockSettings).
+    private void GlassReset_Click(object sender, MouseButtonEventArgs e)
+    {
+        var d = DockSettings.CreateDefault();
+        var s = _vm.Settings;
+        s.GlassBlurRadius = d.GlassBlurRadius;
+        s.GlassDistortion = d.GlassDistortion;
+        s.GlassTintOpacity = d.GlassTintOpacity;
+        s.GlassSaturation = d.GlassSaturation;
+        s.GlassAberration = d.GlassAberration;
+        s.GlassRimHighlight = d.GlassRimHighlight;
+
+        _initializing = true; // reflect onto the sliders without re-triggering each handler
+        GlassBlurSlider.Value = Math.Clamp(s.GlassBlurRadius, GlassBlurSlider.Minimum, GlassBlurSlider.Maximum);
+        GlassDistortionSlider.Value = Math.Clamp(s.GlassDistortion, GlassDistortionSlider.Minimum, GlassDistortionSlider.Maximum);
+        GlassTintSlider.Value = Math.Clamp(s.GlassTintOpacity, GlassTintSlider.Minimum, GlassTintSlider.Maximum);
+        GlassSaturationSlider.Value = Math.Clamp(s.GlassSaturation, GlassSaturationSlider.Minimum, GlassSaturationSlider.Maximum);
+        GlassAberrationSlider.Value = Math.Clamp(s.GlassAberration, GlassAberrationSlider.Minimum, GlassAberrationSlider.Maximum);
+        GlassRimSlider.Value = Math.Clamp(s.GlassRimHighlight, GlassRimSlider.Minimum, GlassRimSlider.Maximum);
+        _initializing = false;
+
+        ApplyGlassAndSave();
+    }
+
+    private void ApplyGlassAndSave()
+    {
+        _applyGlass();
+        _vm.Save();
     }
 
     // --- Minimize effect ---
@@ -262,6 +400,15 @@ public partial class SettingsWindow : Window
             return;
         _vm.Settings.MinimizeEffect = (MinimizeEffect)MinimizeCombo.SelectedIndex; // 0 Suck, 1 Scale, 2 Genie
         _vm.Save();
+    }
+
+    // --- Performance mode ---
+
+    private void PerformanceCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing)
+            return;
+        _setPerformanceMode((PerformanceMode)PerformanceCombo.SelectedIndex); // 0 Auto, 1 Quality, 2 Performance
     }
 
     // --- Effect speed ---
@@ -344,6 +491,33 @@ public partial class SettingsWindow : Window
     {
         _vm.RecomputeLayout(); // relayout the dock live (resizes + repositions the window)
         _vm.Save();
+    }
+
+    // --- About page links ---
+
+    // A "Built with" chip (Border with its site URL in Tag).
+    private void OpenLink_Click(object sender, MouseButtonEventArgs e)
+        => OpenUrl((string)((FrameworkElement)sender).Tag);
+
+    // The inspiration / author hyperlinks.
+    private void Hyperlink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
+    {
+        OpenUrl(e.Uri.AbsoluteUri);
+        e.Handled = true;
+    }
+
+    private static void OpenUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url))
+            return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch
+        {
+            // Best-effort; a missing/blocked browser shouldn't crash the window.
+        }
     }
 
     private static Brush FrozenBrush(string hex)

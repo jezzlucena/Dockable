@@ -29,10 +29,10 @@
   <ItemGroup>
     <None Remove="Assets\Dockable.png" />
     <None Remove="Assets\Dockable-32.png" />
-    <None Remove="Assets\Settings_icon.png" />
+    <None Remove="Assets\settings.png" />
     <Resource Include="Assets\Dockable.png" />
     <Resource Include="Assets\Dockable-32.png" />
-    <Resource Include="Assets\Settings_icon.png" />
+    <Resource Include="Assets\settings.png" />
   </ItemGroup>
 
   <!-- UI sound effects: embedded as WPF resources (loaded via a pack URI stream) so the app stays a

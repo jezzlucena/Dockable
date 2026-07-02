@@ -34,8 +34,11 @@ Code session here — read it first; it captures everything not obvious from the
   errors). **For Debug builds it's fine to kill the app yourself first** (standing permission from the
   user) so the copy step doesn't fail — just run the stop command before building.
   Stop command: `Get-Process Dockable -ErrorAction SilentlyContinue | Stop-Process -Force`.
-  Only one dock runs (single-instance Mutex); no watchdog process anymore. Force-killing is safe:
-  the taskbar uses native auto-hide, so it stays usable even if exit handlers don't run.
+  Only one dock runs (single-instance Mutex). Force-killing is safe: a hidden `powershell.exe`
+  **taskbar watchdog** (`Interop/TaskbarWatchdog`, spawned at startup) notices the kill, restores the
+  taskbar's pre-launch state, and exits on its own — killing `Dockable` by name doesn't touch it
+  (different image name), and a stray watchdog from a previous run skips the restore if a new dock is
+  already running. Don't bother killing the watchdog; it self-terminates seconds after the app dies.
 - **PowerShell is 5.1.** No `out var` / `var` in `Add-Type` C# (use explicit types). A script that
   combines `Remove-Item` with a `C:\Program...` literal is sandbox-blocked — split the steps or use
   `Clear-Content` / `Join-Path`.
@@ -179,10 +182,23 @@ src/Dockable/
                          (menu bar's live focused-window title).
     KeyboardLayouts.cs   Current layout (GetKeyboardLayout) + installed list (GetKeyboardLayoutList) +
                          switch the foreground app (PostMessage WM_INPUTLANGCHANGEREQUEST).
+    AppMenu.cs           AppMenuEntry model (+ AppMenuSource enum) for the menu bar's mirrored app menus.
+    Win32AppMenu.cs      Tier-1 global menus: read a window's classic HMENU bar cross-process
+                         (GetMenu/GetMenuString), host its dropdown from our bar (TrackPopupMenuEx +
+                         WM_INITMENUPOPUP relay), post the pick back (WM_COMMAND / WM_MENUCOMMAND).
+    UiaAppMenu.cs        Tier-2 fallback: UI Automation MenuBar scan (WPF/Electron/Qt); labels mirror,
+                         but invoking expands the app's OWN menu in place. Cached per HWND (incl.
+                         negative); reads/invokes run off the UI thread (huge UIA trees are slow).
     Monitors.cs          Per-monitor bounds/workarea (px) + DPI for a window.
     AppBarManager.cs     SHAppBarMessage register/reserve (always-visible docking).
     Taskbar.cs           Toggle the taskbar's NATIVE auto-hide (SHAppBarMessage ABM_SETSTATE);
                          also SW_SHOWs the tray windows to undo any legacy force-hide.
+    TaskbarWatchdog.cs   Out-of-process restore safety net: spawns a hidden powershell.exe (different
+                         image name — survives kill-by-name; no extra binary to ship, so the portable
+                         single-file build is unaffected) that Wait-Process-es on the dock's PID, then
+                         restores the pre-launch taskbar state via SHAppBarMessage/ShowWindow (Add-Type
+                         C#, kept C# 5 / PS 5.1-safe) and exits. Skips the restore if a new dock
+                         instance is already running (quick restart race).
     TaskbarApps.cs       Read taskbar pins (registry order + .lnk targets/AUMIDs) + enumerate
                          taskbar-eligible app windows (exe path + window AUMID).
     PinMatcher.cs        Multi-strategy "does this window belong to this pin?".
@@ -270,8 +286,8 @@ src/Dockable/
 | `MaxIconSize` | 96 | Max magnified size. |
 | `MagnificationRadius` | 160 | Cursor influence radius (DIP). |
 | `MagnificationEnabled` | true | Fisheye magnification on/off. |
-| `TaskbarVisibility` | `Auto` | `TaskbarVisibility`: Always (visible) / Auto (native auto-hide, reveal on hover) / Never (fully hidden). Pre-launch state restored on exit/crash. |
-| `ShowMenuBar` | false | Show the macOS-style top menu bar (opt-in; reserves a strip at the top of the primary monitor). |
+| `TaskbarVisibility` | `Never` | `TaskbarVisibility`: Always (visible) / Auto (native auto-hide, reveal on hover) / Never (fully hidden — default; the dock replaces the taskbar). Pre-launch state restored on exit/crash/kill (watchdog). |
+| `ShowMenuBar` | true | Show the macOS-style top menu bar (reserves a strip at the top of the primary monitor). |
 | `ShowRunningIndicators` | true | Show the running-dot under apps with open windows. |
 | `AnimateOpeningApps` | true | Bounce an app's icon when it gains a new window. |
 | `MinimizeIntoIcon` | false | Minimize into the app's dock icon instead of a separate tile. |
@@ -339,7 +355,7 @@ src/Dockable/
   a tile backed by the dock's own `SettingsWindow` rather than an external process. Seeded once as a
   pin to the right of the taskbar-seeded pins (`SeededPreferencesPin`), removable like any pin.
   `DockViewModel.UpdatePreferencesApp` injects it (pinned, or unpinned-while-open) into
-  `RefreshTaskbarApps`; icon is `AppIcon.Preferences` (the bundled `System_Preferences_icon.png`);
+  `RefreshTaskbarApps`; icon is `AppIcon.Preferences` (the bundled `Assets\settings.png`);
   `IsRunning` tracks `DockViewModel.PreferencesOpen` (set by the dock on open/close + a refresh).
   Click → `OpenDockPreferences` (open/focus) when closed; right-click → a dedicated `BuildPreferencesMenu`
   (Keep in Dock toggle + Quit, which closes *only* the Preferences window). The window is `Topmost`.
@@ -461,7 +477,7 @@ src/Dockable/
   thumbnail (app icon stands in); stale tiles if an app closes while minimized (needs a destroy hook);
   multi-monitor genie target approximate.
 
-### macOS-style menu bar (top AppBar) — optional, off by default
+### macOS-style menu bar (top AppBar) — on by default (opt-out)
 - Enabled via `DockSettings.ShowMenuBar` (Dock Preferences toggle or tray "Show menu bar"). **App owns
   the window's lifetime** (`App.SetMenuBarVisible`): the dock's `SetShowMenuBar` persists the setting and
   calls into `App`; the menu bar is created on first show and `Close()`d (which `Unregister()`s its AppBar)
@@ -485,7 +501,13 @@ src/Dockable/
   via the window's AUMID → `shell:AppsFolder` name (the dock's approach — the host ApplicationFrameHost
   exe isn't the app), else the exe's `FileVersionInfo.FileDescription` (→ shell name → title-cased stem →
   window-title fallbacks). The bar tracks the last real app (`_appHwnd`, via `Interop/TitleWatcher`,
-  skipping our own process). **Click the name** → the focused window's title-bar menu, reproduced by
+  skipping our own process — EXCEPT the Dock Preferences window, which is represented like any app
+  under its dock-tile name `Window_DockPreferences`, with no mirrored menus: it's WPF/no HMENU, and
+  UIA-scanning one's own process is deadlock-prone. The dock/menu-bar windows themselves stay
+  skipped); at startup, when launching the dock made US foreground, it seeds from the top-most
+  non-minimized app window in Z-order (`SeedFromTopmostAppWindow`) so the name + app menus show
+  immediately instead of waiting for the first focus change; a represented window that dies (e.g.
+  Preferences closed, focus fell to the dock) is dropped and re-seeded the same way. **Click the name** → the focused window's title-bar menu, reproduced by
   posting the non-client right-click messages (`WM_NCRBUTTONDOWN`/`WM_NCRBUTTONUP` with `HTCAPTION`) to
   the target so its **own** `DefWindowProc` shows the menu in its process (a cross-process
   `GetSystemMenu`+`TrackPopupMenu` doesn't work — the menu is owned by the other process; this also
@@ -496,6 +518,25 @@ src/Dockable/
   **Notifications** (`Notifications.Open` → Win+N), a clickable **keyboard layout** (`KeyboardLayouts`: shows the foreground
   thread's layout; click → a code-built `ContextMenu` of installed layouts → `Switch` posts
   `WM_INPUTLANGCHANGEREQUEST` to the foreground), and the **clock** (culture-aware, follows `Loc`).
+- **Global app menus (two tiers):** after the app name, the bar mirrors the focused window's in-window
+  menu ("File", "Edit", …) as clickable labels (`MenuBarViewModel.MenuEntries`, refreshed on foreground
+  hwnd change with a `_menuGen` stale-guard). **Tier 1 (Win32/HMENU** — Notepad++, 7-Zip, most classic
+  apps): `Interop/Win32AppMenu` reads the bar cross-process (`GetMenu`/`GetMenuString` — menus are shared
+  USER objects, no injection) and a click hosts the app's REAL dropdown under the label:
+  `WM_INITMENUPOPUP` is sent first (timeout-guarded, so lazily-populated menus are live), then
+  `TrackPopupMenuEx(TPM_RETURNCMD)` tracks the foreign submenu from our window (foreground handoff +
+  `WM_NULL` after, tray-menu style) and the picked id is posted back as `WM_COMMAND`. `MNS_NOTIFYBYPOS`
+  menus track without `TPM_RETURNCMD` and relay `WM_MENUCOMMAND` instead; while a foreign popup is up,
+  `MenuBarWindow.WndProc` relays nested-submenu `WM_INITMENUPOPUP`/`WM_UNINITMENUPOPUP` to the target
+  (`Win32AppMenu.ForwardMenuMessage`). **Tier 2 (UIA fallback** — WPF/Electron/VS Code/Qt, no HMENU):
+  `Interop/UiaAppMenu` finds a `MenuBar` control in the window's UIA tree (background thread; cached per
+  HWND including "has none"; the non-client "System Menu Bar" — a lone "System" item, parented in the
+  UIA TitleBar — is skipped since clicking the app's display name already opens that menu) and renders
+  the same labels, but a click can only Expand/Invoke the app's
+  OWN menu at its own location — UIA popups can't be re-anchored under our bar. No menu found →
+  nothing rendered (Chrome/Edge/Office/UWP command-bar apps). Known limits: owner-drawn Win32 items
+  render blank in a hosted popup (WM_DRAWITEM can't cross processes); elevated apps are UIPI-blocked;
+  very long menus can overlap the trailing status cluster on narrow screens.
 - **Full-screen hide:** like the dock, the menu bar hides itself + its backdrop while a full-screen or
   borderless-fullscreen app (game/video) owns its monitor (`Interop/Fullscreen` test, re-checked on
   foreground change, the 1 s clock tick, and `ABN_FULLSCREENAPP`); it reappears when that window goes away.
@@ -514,18 +555,27 @@ src/Dockable/
   can't be repositioned under the menu-bar icons.
 
 ### Taskbar visibility + restore safety
-- **Three states** (`DockSettings.TaskbarVisibility`, default **Auto**), set from Dock Preferences →
+- **Three states** (`DockSettings.TaskbarVisibility`, default **Never**), set from Dock Preferences →
   Taskbar (a combo: Always / Auto / Never) or the tray "Windows taskbar" submenu, applied by
   `DockWindow.SetTaskbarVisibility` → `Interop/Taskbar.SetVisibility`:
   - **Always** — `SW_SHOW` the tray windows + `ABM_SETSTATE, ABS_ALWAYSONTOP` (auto-hide off, visible).
   - **Auto** — `SW_SHOW` + `ABM_SETSTATE, ABS_AUTOHIDE`: the OS slides it away and reveals on edge hover
     (no custom timer).
-  - **Never** — `ABS_ALWAYSONTOP` (so it won't reveal on hover) then `SW_HIDE` the tray windows.
-- **Restore on exit/crash**: `Taskbar.CaptureOriginalState()` records the pre-launch auto-hide state;
-  `Restore()` (clean exit via `DockWindow.OnClosed` + `App.OnExit`, and managed crash via
-  `AppDomain.UnhandledException`) puts it back. **Auto** is self-restoring even on a hard force-kill
-  (a usable state); **Never** is NOT — a hard kill that skips handlers leaves the taskbar `SW_HIDE`-n
-  (acceptable per the user's explicit ask for a fully-hidden option).
+  - **Never** — `ABS_AUTOHIDE` first, then `SW_HIDE` the tray windows (+ a 750 ms delayed re-hide:
+    Explorer applies ABM_SETSTATE asynchronously and re-shows the tray while doing so, stomping the
+    first SW_HIDE). It MUST be auto-hide, not always-on-top: an always-on-top taskbar keeps its
+    work-area reservation even while SW_HIDDEN, so the shell stacked the dock's AppBar strip on a
+    ghost taskbar-height strip and maximized windows floated ~48 px above the dock (measured; looked
+    like "reserving for the magnified dock").
+- **Restore on exit/crash/kill**: `Taskbar.CaptureOriginalState()` records the pre-launch auto-hide
+  state; `Restore()` (clean exit via `DockWindow.OnClosed` + `App.OnExit`, and managed crash via
+  `AppDomain.UnhandledException`) puts it back. **Hard kills** (Task Manager, `taskkill /F`,
+  `Stop-Process`) skip all in-process handlers, so `App.OnStartup` also spawns the out-of-process
+  `Interop/TaskbarWatchdog` (hidden `powershell.exe`, handed the captured state): it waits on the
+  dock's PID and re-asserts that state (SW_SHOW all tray windows + ABM_SETSTATE) when the dock dies
+  for ANY reason, then exits by itself. So even **Never** now survives a force-kill. The watchdog's
+  restore after a clean exit is an idempotent no-op, and it skips the restore entirely if a new dock
+  instance is already running by the time it wakes (quick-restart race, 750 ms grace).
 - Note the **conflict to watch**: the dock also lives at the bottom, so revealing the native taskbar
   pops it up over/under the dock at the same edge. Accepted per user request (taskbar on demand).
 

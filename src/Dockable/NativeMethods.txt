@@ -176,6 +176,21 @@ EVENT_OBJECT_NAMECHANGE
 // --- Menu bar: current keyboard layout indicator ---
 GetKeyboardLayout
 GetKeyboardLayoutList
+// Resolve a layout's localized "Layout Display Name" registry indirect string ("@input.dll,-5010").
+SHLoadIndirectString
+
+// --- Menu bar: read + host another window's Win32 menu bar (global app menus, Tier 1) ---
+GetMenu
+GetSubMenu
+GetMenuItemCount
+GetMenuString
+GetMenuItemID
+GetMenuInfo
+MENUINFO
+MENU_ITEM_FLAGS
+TrackPopupMenuEx
+TRACK_POPUP_MENU_FLAGS
+IsMenu
 
 // --- Menu bar (Windows-logo menu): sleep + lock the session ---
 SetSuspendState

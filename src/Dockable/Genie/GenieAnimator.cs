@@ -5,6 +5,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
+using Dockable.Interop;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
@@ -25,8 +26,10 @@ namespace Dockable.Genie;
 /// </summary>
 public sealed class GenieAnimator : IMinimizeAnimator
 {
-    private const int Columns = 12; // finer horizontally so the Suck black-hole spiral stays smooth
-    private const int Rows = 48;
+    // Mesh resolution. Finer horizontally so the Suck black-hole spiral stays smooth; resolved from
+    // PerformanceProfile at overlay-build time (coarser when reduced → less per-frame GPU buffer upload).
+    private int Columns = 12;
+    private int Rows = 48;
 
     /// <summary>Which curve the mesh warp uses; both share the engine, differing only in shaping.</summary>
     public enum GenieStyle { Suck, Genie }
@@ -96,6 +99,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
     private StyleParams _params = ParamsFor(GenieStyle.Suck); // resolved at the start of each play
     private Action? _onCompleted;
     private TimeSpan _startTime;
+    private TimeSpan _lastFrame; // last painted frame's RenderingTime, for the frame-rate cap
     // Bumped whenever new content is shown on the shared overlay. A deferred restore hide (see
     // CompleteRestoreHold) checks it so it never hides a frame that a newer animation now owns.
     private int _playSeq;
@@ -119,6 +123,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
         _params = ParamsFor(Style);
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
+        _lastFrame = TimeSpan.Zero;
 
         PreparePlay();
         UpdateMesh(reverse ? 1.0 : 0.0);
@@ -167,6 +172,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
         _params = ParamsFor(Style);
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
+        _lastFrame = TimeSpan.Zero;
 
         PreparePlay();
         UpdateMesh(reverse ? 1.0 : 0.0);
@@ -192,6 +198,13 @@ public sealed class GenieAnimator : IMinimizeAnimator
         double duration = _params.Duration / Math.Max(0.1, SpeedMultiplier);
         double progress = Math.Min(1.0, (now - _startTime).TotalMilliseconds / duration);
         double warp = _reverse ? 1.0 - progress : progress;
+
+        // Frame-rate cap: skip this frame's mesh rebuild if we painted too recently — but never skip the
+        // final frame, so the warp always lands and its completion callback runs.
+        if (progress < 1.0 && _lastFrame != TimeSpan.Zero
+            && (now - _lastFrame).TotalMilliseconds < PerformanceProfile.MinFrameIntervalMs)
+            return;
+        _lastFrame = now;
 
         long ts = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
         UpdateMesh(warp);
@@ -265,11 +278,25 @@ public sealed class GenieAnimator : IMinimizeAnimator
         done?.Invoke();
     }
 
+    /// <summary>Re-resolves the mesh resolution from <see cref="PerformanceProfile"/> after a mode change.
+    /// The overlay is idle (hidden) between warps, so tearing it down here lets the next play rebuild it
+    /// at the new resolution. A no-op when the resolution is unchanged.</summary>
+    public void RefreshQuality()
+    {
+        var (cols, rows) = PerformanceProfile.GenieMesh;
+        if (_overlay is null || (cols == Columns && rows == Rows))
+            return;
+        FinishCurrent(); // finalize any in-flight warp (should be none while idle) so nothing is stranded
+        _overlay.Close();
+        _overlay = null; // next EnsureOverlay rebuilds the mesh + arrays at the new resolution
+    }
+
     private void EnsureOverlay()
     {
         if (_overlay is not null)
             return;
 
+        (Columns, Rows) = PerformanceProfile.GenieMesh;
         _mesh = BuildMesh();
         _positions = _mesh.Positions; // held so we can detach/reattach it cheaply each frame
 
@@ -335,7 +362,7 @@ public sealed class GenieAnimator : IMinimizeAnimator
         PInvoke.SetWindowLongPtr((HWND)hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE, (nint)(uint)ex);
     }
 
-    private static MeshGeometry3D BuildMesh()
+    private MeshGeometry3D BuildMesh()
     {
         var mesh = new MeshGeometry3D
         {

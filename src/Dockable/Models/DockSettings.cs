@@ -44,6 +44,22 @@ public enum TaskbarVisibility
     Never,
 }
 
+/// <summary>How aggressively the dock trades visual fidelity for animation smoothness.</summary>
+public enum PerformanceMode
+{
+    /// <summary>Pick automatically from the GPU's WPF render tier: full effects on tier-2 (full
+    /// hardware) GPUs, reduced effects on partial/no-acceleration GPUs.</summary>
+    Auto,
+
+    /// <summary>Force full-fidelity effects (dual icon shadows, fine genie mesh, no glass downgrade,
+    /// full framerate) regardless of the detected GPU tier.</summary>
+    Quality,
+
+    /// <summary>Force reduced effects everywhere (single icon shadow, coarse genie mesh, Liquid Glass
+    /// rendered as Acrylic, capped framerate) — smoothest on weak hardware.</summary>
+    Performance,
+}
+
 /// <summary>How a window animates as it minimizes into / restores from the dock.</summary>
 public enum MinimizeEffect
 {
@@ -78,6 +94,34 @@ public sealed class DockSettings
     /// <summary>Dock bar background style (Translucent / Acrylic / Liquid Glass). Defaults to Liquid Glass.</summary>
     public GlassEffect GlassEffect { get; set; } = GlassEffect.LiquidGlass;
 
+    // --- Liquid Glass tuning (power-user parameters; only affect the LiquidGlass effect). Defaults
+    // match the values previously hardcoded in DockWindow so the out-of-box look is unchanged. ---
+
+    /// <summary>Gaussian blur sigma (device px) for the frosted-glass blur. 0 = sharp.</summary>
+    public double GlassBlurRadius { get; set; } = 1.4;
+
+    /// <summary>Rim refraction strength — how far (device px) the sample is pulled inward at the edge.</summary>
+    public double GlassDistortion { get; set; } = 34.0;
+
+    /// <summary>Multiplier on the bar's tint (background) alpha. 1.0 = the base tint; higher = more opaque.</summary>
+    public double GlassTintOpacity { get; set; } = 1.0;
+
+    /// <summary>Colour saturation/vibrance of the backdrop behind the glass (1.0 = unchanged).</summary>
+    public double GlassSaturation { get; set; } = 1.8;
+
+    /// <summary>Chromatic aberration strength at the rim (0 = none).</summary>
+    public double GlassAberration { get; set; } = 0.5;
+
+    /// <summary>Peak rim-specular (sheen) intensity on hover (0 = no glint).</summary>
+    public double GlassRimHighlight { get; set; } = 0.5;
+
+    /// <summary>
+    /// How aggressively to trade visual fidelity for animation smoothness. Auto (default) resolves from
+    /// the GPU's WPF render tier — full effects on capable GPUs, reduced on weak ones — while Quality /
+    /// Performance force the respective end regardless of hardware.
+    /// </summary>
+    public PerformanceMode PerformanceMode { get; set; } = PerformanceMode.Auto;
+
     /// <summary>Window minimize/restore animation style.</summary>
     public MinimizeEffect MinimizeEffect { get; set; } = MinimizeEffect.Genie;
 
@@ -99,17 +143,17 @@ public sealed class DockSettings
 
     /// <summary>
     /// How the Windows taskbar is shown while Dockable runs: Always (visible), Auto (native auto-hide,
-    /// reveal on hover — the default), or Never (hidden entirely). The pre-launch state is restored on
-    /// exit/crash.
+    /// reveal on hover), or Never (hidden entirely — the default; the dock replaces it). The pre-launch
+    /// state is restored on exit/crash/kill (in-process handlers + the out-of-process watchdog).
     /// </summary>
-    public TaskbarVisibility TaskbarVisibility { get; set; } = TaskbarVisibility.Auto;
+    public TaskbarVisibility TaskbarVisibility { get; set; } = TaskbarVisibility.Never;
 
     /// <summary>
     /// Show the macOS-style menu bar: a thin strip docked at the top of the primary monitor with the
     /// focused window's title, keyboard layout, a quick-settings shortcut, the system tray, and a clock.
-    /// Opt-in (off by default) because it reserves a strip at the top of the screen.
+    /// On by default (it reserves a strip at the top of the screen; turn off from Dock Preferences).
     /// </summary>
-    public bool ShowMenuBar { get; set; } = false;
+    public bool ShowMenuBar { get; set; } = true;
 
     /// <summary>Show the running-indicator dot under apps that have open windows.</summary>
     public bool ShowRunningIndicators { get; set; } = true;

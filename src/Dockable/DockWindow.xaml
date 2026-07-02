@@ -39,9 +39,13 @@
         <SolidColorBrush x:Key="LabelBorderBrush" Color="#22000000" />
         <SolidColorBrush x:Key="LabelTextBrush" Color="#1D1D1F" />
 
-        <!-- Icon drop-shadow opacities (light defaults; subtle). ApplyTheme() swaps per theme. -->
-        <sys:Double x:Key="IconShadowOuterOpacity">0.10</sys:Double>
+        <!-- Inner icon drop-shadow opacity (light default; subtle). ApplyTheme() swaps per theme. -->
         <sys:Double x:Key="IconShadowInnerOpacity">0.14</sys:Double>
+
+        <!-- Outer icon drop-shadow: a swappable shared effect so Performance mode can drop the wide
+             BlurRadius=20 pass (the biggest per-magnify-frame GPU cost). ApplyTheme() sets it per theme,
+             or null when effects are reduced. -->
+        <DropShadowEffect x:Key="IconOuterShadowEffect" BlurRadius="20" ShadowDepth="10" Direction="270" Opacity="0.10" Color="#000000" />
 
         <!-- One dock entry: Start logo for the Start item, otherwise an extracted icon.
              The container is sized/positioned by the layout engine (Width/Height/Canvas.Left/Top). -->
@@ -99,10 +103,8 @@
                 <!-- Extracted icon (shortcuts) or window thumbnail (minimized tiles).
                      Two stacked drop-shadows (WPF allows one effect per element, so they're nested):
                      outer = 0 10 20 / 0.12, inner = 0 4 8 / 0.18. -->
-                <Grid Visibility="{Binding ShowIconArea, Converter={StaticResource BoolToVis}}">
-                    <Grid.Effect>
-                        <DropShadowEffect BlurRadius="20" ShadowDepth="10" Direction="270" Opacity="{DynamicResource IconShadowOuterOpacity}" Color="#000000" />
-                    </Grid.Effect>
+                <Grid Visibility="{Binding ShowIconArea, Converter={StaticResource BoolToVis}}"
+                      Effect="{DynamicResource IconOuterShadowEffect}">
                     <Image Source="{Binding Icon}"
                            Stretch="Uniform"
                            RenderOptions.BitmapScalingMode="HighQuality">
@@ -247,7 +249,7 @@
              corners. Click-through; shown only in LiquidGlass mode. -->
         <!-- A parent clip with the bar's rounded geometry clips the shader's OUTPUT (the displacement
              would otherwise pull opaque pixels into the corners, squaring them). GlassClipGeometry.Rect
-             is kept in sync with the bar size in code (SyncAcrylic / CaptureGlassBackdrop). -->
+             is kept in sync with the bar size in code (UpdateGlassClip, via SyncAcrylic / frame upload). -->
         <Canvas x:Name="GlassClipHost"
                 Canvas.Left="{Binding BarLeft}"
                 Canvas.Top="{Binding BarTop}"
@@ -269,7 +271,9 @@
                         Height="{Binding BarHeight}"
                         CornerRadius="24">
                     <Border.Background>
-                        <ImageBrush x:Name="GlassBackdropBrush" Stretch="Fill" />
+                        <!-- The capture spans the max magnified bar extent; the Viewbox (absolute px,
+                             set in UpdateGlassClip) crops the live bar's slice out of it. -->
+                        <ImageBrush x:Name="GlassBackdropBrush" Stretch="Fill" ViewboxUnits="Absolute" />
                     </Border.Background>
                 </Border>
             </Border>

@@ -11,7 +11,7 @@
 
 "AppBuild"
 {
-	"AppID"        "YOUR_APP_ID"
+	"AppID"        "4915150"
 	"Desc"         "Dockable 1.0.0"          // shown in the build history; bump per build
 
 	"ContentRoot"  "..\src\Dockable\bin\Publish\Steam\win-x64\"
@@ -19,6 +19,6 @@
 
 	"Depots"
 	{
-		"YOUR_DEPOT_ID"  "depot_build.vdf"
+		"4915151"  "depot_build.vdf"
 	}
 }

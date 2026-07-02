@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Dockable.Interop;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
@@ -41,6 +42,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
     private bool _reverse;
     private Action? _onCompleted;
     private TimeSpan _startTime;
+    private TimeSpan _lastFrame; // last painted frame's RenderingTime, for the frame-rate cap
     // Bumped whenever new content is shown on the shared overlay. A deferred restore hide (see
     // CompleteRestoreHold) checks it so it never hides a frame that a newer animation now owns.
     private int _playSeq;
@@ -59,6 +61,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _reverse = reverse;
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
+        _lastFrame = TimeSpan.Zero;
         _endScale = Math.Clamp(TargetTileWidth / Math.Max(_src.Width, 1), 0.04, 0.25);
 
         _image!.Source = bitmap;
@@ -113,6 +116,7 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         _reverse = reverse;
         _onCompleted = onCompleted;
         _startTime = TimeSpan.Zero;
+        _lastFrame = TimeSpan.Zero;
         _endScale = Math.Clamp(TargetTileWidth / Math.Max(_src.Width, 1), 0.04, 0.25);
 
         ApplyFrame(reverse ? 1.0 : 0.0);
@@ -138,6 +142,13 @@ public sealed class ScaleAnimator : IMinimizeAnimator
         double duration = DurationMs / Math.Max(0.1, SpeedMultiplier);
         double progress = Math.Min(1.0, (now - _startTime).TotalMilliseconds / duration);
         double t = _reverse ? 1.0 - progress : progress;
+
+        // Frame-rate cap: skip this frame's work if we painted too recently — but never skip the final
+        // frame, so the animation always lands and its completion callback runs.
+        if (progress < 1.0 && _lastFrame != TimeSpan.Zero
+            && (now - _lastFrame).TotalMilliseconds < PerformanceProfile.MinFrameIntervalMs)
+            return;
+        _lastFrame = now;
 
         long ts = MinimizeProfiler.Enabled ? Stopwatch.GetTimestamp() : 0;
         ApplyFrame(SmoothStep(t));

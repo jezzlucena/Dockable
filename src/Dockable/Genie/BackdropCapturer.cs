@@ -38,6 +38,11 @@ public sealed unsafe class BackdropCapturer : IDisposable
     private readonly object _rectLock = new();
     private int _rx, _ry, _rw, _rh;
     private bool _haveRect;
+    // Interest rect (physical px): the sub-region actually shown (the live bar slice of the max-extent
+    // grab). The black-glitch test runs on it alone, so a flash covering just the visible slice is
+    // caught even when the margins still hold real content.
+    private int _ix, _iy, _iw, _ih;
+    private bool _haveInterest;
 
     // GDI resources — created and used ONLY on the capture thread.
     private HDC _memDc;
@@ -48,9 +53,10 @@ public sealed unsafe class BackdropCapturer : IDisposable
     private byte[]? _prev;    // last frame, for diffing
     private bool _havePrev;
 
-    // Transient all-black grabs happen when the WDA_EXCLUDEFROMCAPTURE dock resizes fast (magnification):
-    // DWM flashes the excluded region black before it recomposites what's behind. Drop a short run of
-    // them, but accept sustained black so a genuinely black backdrop still shows through.
+    // Transient all-black grabs happen when the WDA_EXCLUDEFROMCAPTURE dock's window region changes
+    // (the idle SetWindowRgn clip is cleared on hover and re-applied when the loop settles): DWM flashes
+    // the excluded region black before it recomposites what's behind. Drop a short run of them, but
+    // accept sustained black so a genuinely black backdrop still shows through.
     private const int MaxBlackSkips = 4;
     private int _blackSkips;
     private bool _blackReal;
@@ -78,6 +84,17 @@ public sealed unsafe class BackdropCapturer : IDisposable
         {
             _rx = x; _ry = y; _rw = w; _rh = h;
             _haveRect = true;
+        }
+    }
+
+    /// <summary>Publishes the visible sub-rect (physical px, same space as <see cref="SetRect"/>) that
+    /// the black-glitch test should judge. Cheap; safe from any thread.</summary>
+    public void SetInterestRect(int x, int y, int w, int h)
+    {
+        lock (_rectLock)
+        {
+            _ix = x; _iy = y; _iw = w; _ih = h;
+            _haveInterest = true;
         }
     }
 
@@ -172,11 +189,26 @@ public sealed unsafe class BackdropCapturer : IDisposable
     private bool CaptureOnce()
     {
         int x, y, w, h;
+        int ix, iy, iw, ih;
         lock (_rectLock)
         {
             if (!_haveRect)
                 return false;
             x = _rx; y = _ry; w = _rw; h = _rh;
+            // Interest rect in capture-local coords, clamped; empty/absent → judge the whole frame.
+            if (_haveInterest)
+            {
+                ix = Math.Clamp(_ix - x, 0, w); iy = Math.Clamp(_iy - y, 0, h);
+                iw = Math.Clamp(_iw, 0, w - ix); ih = Math.Clamp(_ih, 0, h - iy);
+            }
+            else
+            {
+                ix = 0; iy = 0; iw = w; ih = h;
+            }
+            if (iw == 0 || ih == 0)
+            {
+                ix = 0; iy = 0; iw = w; ih = h;
+            }
         }
         if (w <= 0 || h <= 0 || w > 20000 || h > 20000)
             return false;
@@ -205,9 +237,9 @@ public sealed unsafe class BackdropCapturer : IDisposable
         int len = w * 4 * h;
         var cur = new ReadOnlySpan<byte>(_bits, len);
 
-        // Drop transient all-black grabs (the exclude-from-capture hole flashing during a fast resize),
+        // Drop transient all-black grabs (the exclude-from-capture hole flashing after a region change),
         // but stop dropping once black persists — that's a real black backdrop, not a glitch.
-        if (LooksBlack(cur, len))
+        if (LooksBlack(cur, w, ix, iy, iw, ih))
         {
             if (!_blackReal && ++_blackSkips < MaxBlackSkips)
             {
@@ -258,18 +290,26 @@ public sealed unsafe class BackdropCapturer : IDisposable
         }
     }
 
-    /// <summary>True when most of the grab is exact RGB 0,0,0 — the exclude-from-capture hole flashing
-    /// black during a fast resize. It's a large FRACTION rather than all-or-nothing because when the
-    /// published rect and the on-screen dock are briefly out of sync the hole covers only part of the
-    /// grab. Real content (even dark) virtually never has a majority of pixels at exactly zero.</summary>
-    private static bool LooksBlack(ReadOnlySpan<byte> px, int len)
+    /// <summary>True when most of the visible (interest) region is exact RGB 0,0,0 — the
+    /// exclude-from-capture hole flashing black while DWM recomposites after the dock's window region
+    /// changes. Judged on the interest region only: the max-extent grab's margins may hold real content
+    /// while the bar slice — the part the user sees — is blacked out. It's a large FRACTION rather than
+    /// all-or-nothing because the hole and the slice never align exactly; real content (even dark)
+    /// virtually never has a majority of pixels at exactly zero.</summary>
+    private static bool LooksBlack(ReadOnlySpan<byte> px, int frameW, int ix, int iy, int iw, int ih)
     {
         int samples = 0, black = 0;
-        for (int i = 0; i + 2 < len; i += 128) // every 32nd pixel; test B|G|R, skip the unused X byte
+        int stride = frameW * 4;
+        for (int y = iy; y < iy + ih; y += 4)       // every 4th row
         {
-            samples++;
-            if ((px[i] | px[i + 1] | px[i + 2]) == 0)
-                black++;
+            int row = y * stride;
+            for (int x = ix; x < ix + iw; x += 32)  // every 32nd pixel; test B|G|R, skip the unused X byte
+            {
+                int i = row + x * 4;
+                samples++;
+                if ((px[i] | px[i + 1] | px[i + 2]) == 0)
+                    black++;
+            }
         }
         return samples > 0 && black * 100 >= samples * 40; // ≥40% pure-black → treat as a glitch
     }

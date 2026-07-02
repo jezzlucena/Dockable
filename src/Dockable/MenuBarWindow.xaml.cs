@@ -44,6 +44,7 @@ public partial class MenuBarWindow : Window
     private IntPtr _hwnd;
     private AppBarManager? _appBar;
     private IntPtr _appHwnd; // the focused app window the bar currently represents (its name + system menu)
+    private int _menuGen; // stale-guard: async (UIA) app-menu reads only apply if still the latest
     private bool _fullscreenActive; // hidden while a full-screen app owns our monitor
 
     public MenuBarWindow()
@@ -150,15 +151,43 @@ public partial class MenuBarWindow : Window
         if (ViewModel is null)
             return;
         HWND fg = PInvoke.GetForegroundWindow();
-        if (fg.IsNull)
-            return;
+        uint pid = 0;
+        if (!fg.IsNull)
+            PInvoke.GetWindowThreadProcessId(fg, &pid);
 
         // Don't follow our own windows (the dock/menu bar can briefly take focus) — keep representing
-        // the last real app instead.
-        uint pid = 0;
-        PInvoke.GetWindowThreadProcessId(fg, &pid);
-        if (pid == _ownProcessId)
+        // the last real app instead. At startup there IS no "last real app" yet (launching the dock
+        // made US foreground), so seed from the top-most real app window in Z-order — the window the
+        // user was in before starting Dockable.
+        if (fg.IsNull || pid == _ownProcessId)
+        {
+            // Exception: the Dock Preferences window is a real, user-facing window — represent it
+            // like any app, under the same name as its dock tile. (It's WPF, so it has no HMENU, and
+            // UIA-scanning our own process is deadlock-prone — no mirrored app menus for it.)
+            IntPtr prefs = ViewModel.PreferencesHwnd;
+            if (!fg.IsNull && prefs != IntPtr.Zero && (IntPtr)fg == prefs)
+            {
+                if (prefs == _appHwnd)
+                    return;
+                _appHwnd = prefs;
+                ViewModel.AppName = Loc.T("Window_DockPreferences");
+                _menuGen++; // invalidate any in-flight UIA read for the previous app
+                SetMenuEntries(null);
+                return;
+            }
+
+            // The window we represented may be gone (e.g. Preferences closed, focus fell to the dock).
+            if (_appHwnd != IntPtr.Zero && !PInvoke.IsWindow((HWND)_appHwnd))
+            {
+                _appHwnd = IntPtr.Zero;
+                ViewModel.AppName = string.Empty;
+                _menuGen++;
+                SetMenuEntries(null);
+            }
+            if (_appHwnd == IntPtr.Zero)
+                SeedFromTopmostAppWindow();
             return;
+        }
 
         IntPtr fgPtr = fg;
         if (fgPtr == _appHwnd)
@@ -166,6 +195,86 @@ public partial class MenuBarWindow : Window
 
         _appHwnd = fgPtr;
         ViewModel.AppName = ForegroundApp.DisplayName(fgPtr, pid);
+        RefreshAppMenus(fgPtr);
+    }
+
+    private void SeedFromTopmostAppWindow()
+    {
+        foreach (var w in TaskbarApps.EnumerateAppWindows(_ownProcessId))
+        {
+            if (PInvoke.IsIconic((HWND)w.Hwnd))
+                continue; // minimized windows keep their Z-slot but aren't what the user sees
+            _appHwnd = w.Hwnd;
+            ViewModel!.AppName = ForegroundApp.DisplayName(w.Hwnd, WindowControl.GetProcessId(w.Hwnd));
+            RefreshAppMenus(w.Hwnd);
+            return;
+        }
+    }
+
+    /// <summary>Mirrors the focused window's in-window menu ("File", "Edit", …) after its name:
+    /// Tier 1 reads a classic Win32 menu bar synchronously (cheap); windows without one fall back to
+    /// a UI Automation scan on a background thread (slow on huge accessibility trees).</summary>
+    private void RefreshAppMenus(IntPtr hwnd)
+    {
+        int gen = ++_menuGen;
+
+        var win32 = Win32AppMenu.TryRead(hwnd);
+        if (win32 is not null)
+        {
+            SetMenuEntries(win32);
+            return;
+        }
+
+        SetMenuEntries(null); // clear the previous app's labels while the UIA read runs
+        Task.Run(() =>
+        {
+            var uia = UiaAppMenu.TryRead(hwnd);
+            if (uia is null)
+                return;
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (gen == _menuGen && hwnd == _appHwnd)
+                    SetMenuEntries(uia);
+            });
+        });
+    }
+
+    private void SetMenuEntries(List<AppMenuEntry>? entries)
+    {
+        var collection = ViewModel?.MenuEntries;
+        if (collection is null)
+            return;
+        collection.Clear();
+        if (entries is null)
+            return;
+        foreach (var entry in entries)
+            collection.Add(entry);
+    }
+
+    // A mirrored menu label was clicked: Win32 menus are hosted as a real dropdown anchored under the
+    // label (flush with the bar's bottom edge); UIA menus can only be expanded in the app itself.
+    private void AppMenu_Click(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.DataContext is not AppMenuEntry entry)
+            return;
+        IntPtr target = _appHwnd;
+        if (target == IntPtr.Zero || !PInvoke.IsWindow((HWND)target))
+            return;
+
+        if (entry.Source == AppMenuSource.Win32)
+        {
+            var labelOrigin = element.PointToScreen(new Point(0, 0));
+            var barBottom = PointToScreen(new Point(0, ActualHeight)); // screen px, DPI-scaled
+            Win32AppMenu.Show(target, entry.Index,
+                (int)Math.Round(labelOrigin.X), (int)Math.Round(barBottom.Y), _hwnd);
+        }
+        else
+        {
+            // Activate first (from the UI thread, while we're foreground and allowed to hand it off)
+            // so the app's menu tracks/dismisses correctly, then expand off-thread — UIA can stall.
+            PInvoke.SetForegroundWindow((HWND)target);
+            Task.Run(() => UiaAppMenu.Invoke(target, entry.Index, entry.Label));
+        }
     }
 
     private void UpdateKeyboard()
@@ -349,6 +458,22 @@ public partial class MenuBarWindow : Window
     private void Notifications_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
         => Notifications.Open();
 
+    // Opens the Windows "Date & time" settings page (Settings > Time & language > Date & time).
+    private void Clock_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:dateandtime")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Best-effort; the settings deep-link may be unavailable on some SKUs.
+        }
+    }
+
     private void Keyboard_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         var layouts = KeyboardLayouts.Installed();
@@ -359,9 +484,12 @@ public partial class MenuBarWindow : Window
         var menu = new System.Windows.Controls.ContextMenu();
         foreach (var (hkl, label) in layouts)
         {
+            // Full name ("English (United States) — United States-International") so same-language
+            // layouts are tellable apart; the two-letter label is only a last-resort fallback.
+            string full = KeyboardLayouts.DisplayNameFor(hkl);
             var item = new System.Windows.Controls.MenuItem
             {
-                Header = string.IsNullOrEmpty(label) ? "??" : label,
+                Header = full.Length > 0 ? full : (string.IsNullOrEmpty(label) ? "??" : label),
             };
             nint handle = hkl;
             item.Click += (_, _) => KeyboardLayouts.Switch(handle);
@@ -466,6 +594,10 @@ public partial class MenuBarWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        // While we host another app's Win32 dropdown, relay the menu lifecycle messages it expects
+        // (nested-submenu WM_INITMENUPOPUP, NOTIFYBYPOS picks) — they arrive at us as the popup owner.
+        Win32AppMenu.ForwardMenuMessage(msg, wParam, lParam);
+
         if (msg == WM_SETTINGCHANGE
             && ViewModel?.Settings.Theme == DockTheme.System
             && Marshal.PtrToStringAuto(lParam) == "ImmersiveColorSet")

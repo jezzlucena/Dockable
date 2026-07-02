@@ -5,11 +5,11 @@
         Title="{loc:Loc Window_DockPreferences}"
         WindowStyle="SingleBorderWindow"
         ResizeMode="CanResize"
-        Topmost="True"
         WindowStartupLocation="CenterScreen"
-        SizeToContent="Height"
-        Width="520"
-        MinHeight="240"
+        Width="740"
+        Height="560"
+        MinWidth="620"
+        MinHeight="440"
         Background="#EDEDED"
         UseLayoutRounding="True"
         TextOptions.TextFormattingMode="Ideal"
@@ -239,323 +239,824 @@
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="#1D1D1F" />
         </Style>
+
+        <!-- Section header at the top of a content page -->
+        <Style x:Key="PageHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="Margin" Value="2,0,0,8" />
+        </Style>
+
+        <!-- Sidebar navigation row (macOS System Settings look): icon square + label -->
+        <Style x:Key="NavRow" TargetType="Border">
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style x:Key="NavIcon" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- "Built with" clickable technology chip (About page): a light pill with a colored badge + name -->
+        <Style x:Key="TechChip" TargetType="Border">
+            <Setter Property="Background" Value="#F2F2F4" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Margin" Value="0,0,8,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="ToolTip" Value="{loc:Loc About_OpensInBrowser}" />
+        </Style>
+        <!-- "Opens in your browser" glyph appended to every external link on the About page -->
+        <Style x:Key="LinkGlyph" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="9" />
+            <Setter Property="Foreground" Value="#6E6E73" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="5,1,0,0" />
+            <Setter Property="Text" Value="&#xE8A7;" />
+        </Style>
+        <Style x:Key="TechBadge" TargetType="Border">
+            <Setter Property="Width" Value="20" />
+            <Setter Property="Height" Value="20" />
+            <Setter Property="CornerRadius" Value="5" />
+        </Style>
+        <Style x:Key="TechBadgeText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="9" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="TechName" TargetType="TextBlock">
+            <Setter Property="Margin" Value="7,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#1D1D1F" />
+        </Style>
+        <!-- Feature bullet in the Highlights card -->
+        <Style x:Key="BulletIcon" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="#0A84FF" />
+            <Setter Property="VerticalAlignment" Value="Top" />
+            <Setter Property="Margin" Value="0,2,10,0" />
+        </Style>
+        <Style x:Key="BulletText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="#1D1D1F" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="LineHeight" Value="18" />
+        </Style>
     </Window.Resources>
 
-    <ScrollViewer x:Name="PrefsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                  Focusable="False">
-    <StackPanel Margin="20">
-        <!-- System section (language + login) -->
-        <TextBlock Text="{loc:Loc Section_System}" FontSize="15" FontWeight="SemiBold" Foreground="#1D1D1F" Margin="2,0,0,8" />
-        <Border Background="White" CornerRadius="10" Margin="0,0,0,18">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
-            </Border.Effect>
-            <StackPanel Margin="16,0,16,8">
-                <!-- Language: native names; selection maps to a culture code in code-behind. -->
-                <Grid Height="44">
-                    <TextBlock Text="{loc:Loc Row_Language}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ComboBox x:Name="LanguageCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                              VerticalAlignment="Center" SelectionChanged="LanguageCombo_SelectionChanged" />
-                </Grid>
-                <Border Height="1" Background="#E3E3E3" Margin="0,0,0,0" />
-                <Grid Height="44">
-                    <TextBlock Text="{loc:Loc Row_OpenAtLogin}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ToggleButton x:Name="OpenAtLoginSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
-                                  VerticalAlignment="Center" Click="OpenAtLoginSwitch_Click" />
-                </Grid>
-                <!-- Link to the Windows "Startup Apps" settings page (opens in a new window). -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Cursor="Hand"
-                            Background="Transparent" MouseLeftButtonUp="StartupApps_Click" Margin="0,0,0,4">
-                    <TextBlock Text="{loc:Loc Link_StartupApps}" Foreground="#0A84FF" FontSize="12"
-                               TextDecorations="Underline" VerticalAlignment="Center" />
-                    <TextBlock Text="&#x2197;" Foreground="#0A84FF" FontSize="12"
-                               Margin="3,0,0,0" VerticalAlignment="Center" />
-                </StackPanel>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="200" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Sidebar -->
+        <Border Grid.Column="0" Background="#E4E4E4" BorderBrush="#D0D0D0" BorderThickness="0,0,1,0">
+            <StackPanel Margin="10,16,10,10">
+                <!-- General -->
+                <Border x:Name="NavGeneral" Style="{StaticResource NavRow}" Tag="General"
+                        MouseLeftButtonUp="NavItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#8E8E93">
+                            <TextBlock Text="&#xE713;" Style="{StaticResource NavIcon}" />
+                        </Border>
+                        <TextBlock x:Name="NavGeneralLabel" Text="{loc:Loc Nav_General}" Margin="10,0,0,0"
+                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Dock & Menu Bar -->
+                <Border x:Name="NavDockMenuBar" Style="{StaticResource NavRow}" Tag="DockMenuBar"
+                        MouseLeftButtonUp="NavItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#5E5CE6">
+                            <TextBlock Text="&#xE8A9;" Style="{StaticResource NavIcon}" />
+                        </Border>
+                        <TextBlock x:Name="NavDockMenuBarLabel" Text="{loc:Loc Nav_DockMenuBar}" Margin="10,0,0,0"
+                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Liquid Glass -->
+                <Border x:Name="NavLiquidGlass" Style="{StaticResource NavRow}" Tag="LiquidGlass"
+                        MouseLeftButtonUp="NavItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#32ADE6">
+                            <TextBlock Text="&#xE790;" Style="{StaticResource NavIcon}" />
+                        </Border>
+                        <TextBlock x:Name="NavLiquidGlassLabel" Text="{loc:Loc Nav_LiquidGlass}" Margin="10,0,0,0"
+                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                    </StackPanel>
+                </Border>
+
+                <!-- About -->
+                <Border x:Name="NavAbout" Style="{StaticResource NavRow}" Tag="About"
+                        MouseLeftButtonUp="NavItem_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#FF9500">
+                            <TextBlock Text="&#xE946;" Style="{StaticResource NavIcon}" />
+                        </Border>
+                        <TextBlock x:Name="NavAboutLabel" Text="{loc:Loc Nav_About}" Margin="10,0,0,0"
+                                   VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
+                    </StackPanel>
+                </Border>
             </StackPanel>
         </Border>
 
-        <!-- Appearance section (mimics macOS Settings > Appearance) -->
-        <TextBlock Text="{loc:Loc Section_Appearance}" FontSize="15" FontWeight="SemiBold" Foreground="#1D1D1F" Margin="2,0,0,8" />
-        <Border Background="White" CornerRadius="10">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
-            </Border.Effect>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="16,16">
-                <!-- Light -->
-                <StackPanel Margin="12,0">
-                    <Border x:Name="LightSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
-                            Padding="3" Cursor="Hand" Tag="Light" MouseLeftButtonUp="AppearanceTile_Click">
-                        <Border CornerRadius="8" ClipToBounds="True" Width="76" Height="48">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#5B8DEF" Offset="0" />
-                                    <GradientStop Color="#9FC0FF" Offset="1" />
-                                </LinearGradientBrush>
-                            </Border.Background>
-                            <!-- Mini dock (light styling) -->
-                            <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,5"
-                                    Width="44" Height="13" CornerRadius="5"
-                                    Background="#66FFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
-                                </StackPanel>
-                            </Border>
-                        </Border>
-                    </Border>
-                    <RadioButton x:Name="LightRadio" GroupName="Appearance" Content="{loc:Loc Theme_Light}" Tag="Light"
-                                 HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                 Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
-                </StackPanel>
+        <!-- Content pages (only the selected one is visible) -->
+        <Grid Grid.Column="1">
 
-                <!-- Dark -->
-                <StackPanel Margin="12,0">
-                    <Border x:Name="DarkSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
-                            Padding="3" Cursor="Hand" Tag="Dark" MouseLeftButtonUp="AppearanceTile_Click">
-                        <Border CornerRadius="8" ClipToBounds="True" Width="76" Height="48">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#4B74C4" Offset="0" />
-                                    <GradientStop Color="#829DD1" Offset="1" />
-                                </LinearGradientBrush>
-                            </Border.Background>
-                            <!-- Mini dock (dark styling) -->
-                            <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,5"
-                                    Width="44" Height="13" CornerRadius="5"
-                                    Background="#66242424" BorderBrush="#14FFFFFF" BorderThickness="1">
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
-                                    <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
-                                </StackPanel>
-                            </Border>
-                        </Border>
+            <!-- ============ General ============ -->
+            <ScrollViewer x:Name="PageGeneral" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel Margin="20">
+                    <!-- System section (language + login) -->
+                    <TextBlock Text="{loc:Loc Section_System}" Style="{StaticResource PageHeader}" />
+                    <Border Background="White" CornerRadius="10" Margin="0,0,0,18">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <StackPanel Margin="16,0,16,8">
+                            <!-- Language: native names; selection maps to a culture code in code-behind. -->
+                            <Grid Height="44">
+                                <TextBlock Text="{loc:Loc Row_Language}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="LanguageCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="LanguageCombo_SelectionChanged" />
+                            </Grid>
+                            <Border Height="1" Background="#E3E3E3" Margin="0,0,0,0" />
+                            <Grid Height="44">
+                                <TextBlock Text="{loc:Loc Row_OpenAtLogin}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="OpenAtLoginSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              VerticalAlignment="Center" Click="OpenAtLoginSwitch_Click" />
+                            </Grid>
+                            <!-- Link to the Windows "Startup Apps" settings page (opens in a new window). -->
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Cursor="Hand"
+                                        Background="Transparent" MouseLeftButtonUp="StartupApps_Click" Margin="0,0,0,4">
+                                <TextBlock Text="{loc:Loc Link_StartupApps}" Foreground="#0A84FF" FontSize="12"
+                                           TextDecorations="Underline" VerticalAlignment="Center" />
+                                <TextBlock Text="&#x2197;" Foreground="#0A84FF" FontSize="12"
+                                           Margin="3,0,0,0" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </StackPanel>
                     </Border>
-                    <RadioButton x:Name="DarkRadio" GroupName="Appearance" Content="{loc:Loc Theme_Dark}" Tag="Dark"
-                                 HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                 Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
-                </StackPanel>
 
-                <!-- Auto (half light / half dark) -->
-                <StackPanel Margin="12,0">
-                    <Border x:Name="AutoSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
-                            Padding="3" Cursor="Hand" Tag="Auto" MouseLeftButtonUp="AppearanceTile_Click">
-                        <Border CornerRadius="8" Width="76" Height="48">
-                            <!-- Round the entire composite (both halves) as one shape, not each box. -->
-                            <Border.Clip>
-                                <RectangleGeometry Rect="0,0,76,48" RadiusX="8" RadiusY="8" />
-                            </Border.Clip>
-                            <Grid>
+                    <!-- Appearance section (mimics macOS Settings > Appearance) -->
+                    <TextBlock Text="{loc:Loc Section_Appearance}" Style="{StaticResource PageHeader}" />
+                    <Border Background="White" CornerRadius="10" Margin="0,0,0,18">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="16,16">
+                            <!-- Light -->
+                            <StackPanel Margin="12,0">
+                                <Border x:Name="LightSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
+                                        Padding="3" Cursor="Hand" Tag="Light" MouseLeftButtonUp="AppearanceTile_Click">
+                                    <Border CornerRadius="8" ClipToBounds="True" Width="76" Height="48">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                <GradientStop Color="#5B8DEF" Offset="0" />
+                                                <GradientStop Color="#9FC0FF" Offset="1" />
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                        <!-- Mini dock (light styling) -->
+                                        <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,5"
+                                                Width="44" Height="13" CornerRadius="5"
+                                                Background="#66FFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1">
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Border>
+                                </Border>
+                                <RadioButton x:Name="LightRadio" GroupName="Appearance" Content="{loc:Loc Theme_Light}" Tag="Light"
+                                             HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
+                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                            </StackPanel>
+
+                            <!-- Dark -->
+                            <StackPanel Margin="12,0">
+                                <Border x:Name="DarkSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
+                                        Padding="3" Cursor="Hand" Tag="Dark" MouseLeftButtonUp="AppearanceTile_Click">
+                                    <Border CornerRadius="8" ClipToBounds="True" Width="76" Height="48">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                <GradientStop Color="#4B74C4" Offset="0" />
+                                                <GradientStop Color="#829DD1" Offset="1" />
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                        <!-- Mini dock (dark styling) -->
+                                        <Border VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,5"
+                                                Width="44" Height="13" CornerRadius="5"
+                                                Background="#66242424" BorderBrush="#14FFFFFF" BorderThickness="1">
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
+                                                <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Border>
+                                </Border>
+                                <RadioButton x:Name="DarkRadio" GroupName="Appearance" Content="{loc:Loc Theme_Dark}" Tag="Dark"
+                                             HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
+                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                            </StackPanel>
+
+                            <!-- Auto (half light / half dark) -->
+                            <StackPanel Margin="12,0">
+                                <Border x:Name="AutoSel" CornerRadius="11" BorderThickness="2" BorderBrush="Transparent"
+                                        Padding="3" Cursor="Hand" Tag="Auto" MouseLeftButtonUp="AppearanceTile_Click">
+                                    <Border CornerRadius="8" Width="76" Height="48">
+                                        <!-- Round the entire composite (both halves) as one shape, not each box. -->
+                                        <Border.Clip>
+                                            <RectangleGeometry Rect="0,0,76,48" RadiusX="8" RadiusY="8" />
+                                        </Border.Clip>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Rectangle Grid.Column="0">
+                                                <Rectangle.Fill>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                        <GradientStop Color="#5B8DEF" Offset="0" />
+                                                        <GradientStop Color="#9FC0FF" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Rectangle.Fill>
+                                            </Rectangle>
+                                            <Rectangle Grid.Column="1">
+                                                <Rectangle.Fill>
+                                                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                                        <GradientStop Color="#4B74C4" Offset="0" />
+                                                        <GradientStop Color="#829DD1" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Rectangle.Fill>
+                                            </Rectangle>
+                                            <!-- Mini dock spanning both halves: left = light styling, right = dark -->
+                                            <Border Grid.ColumnSpan="2" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+                                                    Margin="0,0,0,5" Width="44" Height="13" CornerRadius="5"
+                                                    ClipToBounds="True" BorderThickness="1" BorderBrush="#26FFFFFF">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Rectangle Grid.Column="0" Fill="#66FFFFFF" />
+                                                    <Rectangle Grid.Column="1" Fill="#66242424" />
+                                                    <StackPanel Grid.ColumnSpan="2" Orientation="Horizontal"
+                                                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
+                                                        <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
+                                                        <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
+                                                        <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </Border>
+                                <RadioButton x:Name="AutoRadio" GroupName="Appearance" Content="{loc:Loc Theme_Auto}" Tag="Auto"
+                                             HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
+                                             Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Taskbar section -->
+                    <TextBlock Text="{loc:Loc Section_Taskbar}" Style="{StaticResource PageHeader}" />
+                    <Border Background="White" CornerRadius="10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <Grid Height="44" Margin="16,0">
+                            <TextBlock Text="{loc:Loc Row_ShowTaskbar}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                            <ComboBox x:Name="TaskbarCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                      VerticalAlignment="Center" SelectionChanged="TaskbarCombo_SelectionChanged">
+                                <ComboBoxItem Content="{loc:Loc Taskbar_Always}" />
+                                <ComboBoxItem Content="{loc:Loc Taskbar_Auto}" />
+                                <ComboBoxItem Content="{loc:Loc Taskbar_Never}" />
+                            </ComboBox>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- ============ Dock & Menu Bar ============ -->
+            <ScrollViewer x:Name="PageDockMenuBar" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel Margin="20">
+                    <TextBlock Text="{loc:Loc Section_Dock}" Style="{StaticResource PageHeader}" />
+
+                    <!-- White grouped card -->
+                    <Border Background="White" CornerRadius="10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+
+                        <StackPanel>
+                            <!-- Group 1: sliders -->
+                            <Grid Margin="16,16,16,16">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="24" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <Rectangle Grid.Column="0">
-                                    <Rectangle.Fill>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                            <GradientStop Color="#5B8DEF" Offset="0" />
-                                            <GradientStop Color="#9FC0FF" Offset="1" />
-                                        </LinearGradientBrush>
-                                    </Rectangle.Fill>
-                                </Rectangle>
-                                <Rectangle Grid.Column="1">
-                                    <Rectangle.Fill>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                            <GradientStop Color="#4B74C4" Offset="0" />
-                                            <GradientStop Color="#829DD1" Offset="1" />
-                                        </LinearGradientBrush>
-                                    </Rectangle.Fill>
-                                </Rectangle>
-                                <!-- Mini dock spanning both halves: left = light styling, right = dark -->
-                                <Border Grid.ColumnSpan="2" VerticalAlignment="Bottom" HorizontalAlignment="Center"
-                                        Margin="0,0,0,5" Width="44" Height="13" CornerRadius="5"
-                                        ClipToBounds="True" BorderThickness="1" BorderBrush="#26FFFFFF">
-                                    <Grid>
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <Rectangle Grid.Column="0" Fill="#66FFFFFF" />
-                                        <Rectangle Grid.Column="1" Fill="#66242424" />
-                                        <StackPanel Grid.ColumnSpan="2" Orientation="Horizontal"
-                                                    HorizontalAlignment="Center" VerticalAlignment="Center">
-                                            <Border Width="6" Height="6" CornerRadius="1.5" Background="#5B8DEF" Margin="1.5,0" />
-                                            <Border Width="6" Height="6" CornerRadius="1.5" Background="#34C759" Margin="1.5,0" />
-                                            <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF9F0A" Margin="1.5,0" />
-                                            <Border Width="6" Height="6" CornerRadius="1.5" Background="#FF375F" Margin="1.5,0" />
-                                        </StackPanel>
+
+                                <!-- Size -->
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{loc:Loc Label_Size}" Style="{StaticResource GroupLabel}" Margin="0,0,0,6" />
+                                    <Slider x:Name="SizeSlider" Style="{StaticResource MacSlider}"
+                                            Minimum="12" Maximum="64" IsSnapToTickEnabled="True" TickFrequency="1"
+                                            ValueChanged="SizeSlider_ValueChanged" />
+                                    <Grid Margin="0,2,0,0">
+                                        <TextBlock Text="{loc:Loc Caption_Small}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                        <TextBlock Text="{loc:Loc Caption_Large}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
                                     </Grid>
-                                </Border>
+                                </StackPanel>
+
+                                <!-- Magnification -->
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="{loc:Loc Label_Magnification}" Style="{StaticResource GroupLabel}" Margin="0,0,0,6" />
+                                    <Slider x:Name="MagnificationSlider" Style="{StaticResource MacSlider}"
+                                            Minimum="0" Maximum="9" IsSnapToTickEnabled="True" TickFrequency="1"
+                                            ValueChanged="MagnificationSlider_ValueChanged" />
+                                    <Grid Margin="0,2,0,0">
+                                        <TextBlock Text="{loc:Loc Caption_Off}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                        <TextBlock Text="{loc:Loc Caption_Small}" Style="{StaticResource Caption}" HorizontalAlignment="Left" Margin="30,0,0,0" />
+                                        <TextBlock Text="{loc:Loc Caption_Large}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                    </Grid>
+                                </StackPanel>
                             </Grid>
-                        </Border>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <!-- Group 2: pop-up rows -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_Position}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="PositionCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="PositionCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Position_Bottom}" />
+                                    <ComboBoxItem Content="{loc:Loc Position_Left}" />
+                                    <ComboBoxItem Content="{loc:Loc Position_Right}" />
+                                    <ComboBoxItem Content="{loc:Loc Position_Top}" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_MinimizeUsing}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="MinimizeCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="MinimizeCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Suck}" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Scale}" />
+                                    <ComboBoxItem Content="{loc:Loc Minimize_Genie}" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_Performance}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="PerformanceCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="PerformanceCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Performance_Auto}" />
+                                    <ComboBoxItem Content="{loc:Loc Performance_Quality}" />
+                                    <ComboBoxItem Content="{loc:Loc Performance_Performance}" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <!-- Effect speed: the slider matches the Magnification slider's width (same *,24,* grid). -->
+                            <Grid Margin="16,8,16,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="24" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{loc:Loc Label_EffectSpeed}" Style="{StaticResource RowLabel}"
+                                           VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                <StackPanel Grid.Column="2">
+                                    <!-- 5 snap positions: Slow, ·, Default, ·, Fast (ticks shown). -->
+                                    <Slider x:Name="EffectSpeedSlider" Style="{StaticResource MacSlider}"
+                                            Minimum="0" Maximum="4" IsSnapToTickEnabled="True" TickFrequency="1"
+                                            TickPlacement="BottomRight" ValueChanged="EffectSpeedSlider_ValueChanged" />
+                                    <Grid Margin="0,2,0,0">
+                                        <TextBlock Text="{loc:Loc Caption_Slow}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                        <TextBlock Text="{loc:Loc Caption_Default}" Style="{StaticResource Caption}" HorizontalAlignment="Center" />
+                                        <TextBlock Text="{loc:Loc Caption_Fast}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                    </Grid>
+                                </StackPanel>
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <!-- Group 3: toggle rows -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_ShowIndicators}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="IndicatorsSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              VerticalAlignment="Center" Click="IndicatorsSwitch_Click" />
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_AnimateOpening}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="AnimateOpeningSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              VerticalAlignment="Center" Click="AnimateOpeningSwitch_Click" />
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_MinimizeIntoIcon}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="MinimizeIntoIconSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              VerticalAlignment="Center" Click="MinimizeIntoIconSwitch_Click" />
+                            </Grid>
+
+                        </StackPanel>
                     </Border>
-                    <RadioButton x:Name="AutoRadio" GroupName="Appearance" Content="{loc:Loc Theme_Auto}" Tag="Auto"
-                                 HorizontalAlignment="Center" Margin="0,7,0,0" FontSize="12"
-                                 Foreground="#1D1D1F" Checked="AppearanceRadio_Checked" />
+
+                    <!-- Menu Bar section -->
+                    <TextBlock Text="{loc:Loc Section_MenuBar}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
+                    <Border Background="White" CornerRadius="10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <Grid Height="44" Margin="16,0">
+                            <TextBlock Text="{loc:Loc Toggle_ShowMenuBar}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                            <ToggleButton x:Name="ShowMenuBarSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" Click="ShowMenuBarSwitch_Click" />
+                        </Grid>
+                    </Border>
                 </StackPanel>
-            </StackPanel>
-        </Border>
+            </ScrollViewer>
 
-        <TextBlock Text="{loc:Loc Section_Dock}" FontSize="15" FontWeight="SemiBold" Foreground="#1D1D1F" Margin="2,18,0,8" />
+            <!-- ============ Liquid Glass ============ -->
+            <ScrollViewer x:Name="PageLiquidGlass" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel Margin="20">
+                    <TextBlock Text="{loc:Loc Section_LiquidGlass}" Style="{StaticResource PageHeader}" />
 
-        <!-- White grouped card -->
-        <Border Background="White" CornerRadius="10">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
-            </Border.Effect>
+                    <Border Background="White" CornerRadius="10">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <StackPanel>
+                            <!-- Glass Effect picker (moved here from the Dock section) -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Row_GlassEffect}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="GlassEffectCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="GlassEffectCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Glass_Translucent}" />
+                                    <ComboBoxItem Content="{loc:Loc Glass_Acrylic}" />
+                                    <ComboBoxItem Content="{loc:Loc Glass_LiquidGlass}" />
+                                </ComboBox>
+                            </Grid>
 
-            <StackPanel>
-                <!-- Group 1: sliders -->
-                <Grid Margin="16,16,16,16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
+                            <!-- Separates the combo from the Advanced link / sliders; hidden (with them)
+                                 when the effect isn't Liquid Glass so no bare rule trails the card. -->
+                            <Border x:Name="GlassAdvancedDivider" Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                    <!-- Size -->
-                    <StackPanel Grid.Column="0">
-                        <TextBlock Text="{loc:Loc Label_Size}" Style="{StaticResource GroupLabel}" Margin="0,0,0,6" />
-                        <Slider x:Name="SizeSlider" Style="{StaticResource MacSlider}"
-                                Minimum="12" Maximum="64" IsSnapToTickEnabled="True" TickFrequency="1"
-                                ValueChanged="SizeSlider_ValueChanged" />
-                        <Grid Margin="0,2,0,0">
-                            <TextBlock Text="{loc:Loc Caption_Small}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
-                            <TextBlock Text="{loc:Loc Caption_Large}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
-                        </Grid>
-                    </StackPanel>
+                            <!-- Advanced: one-way reveal of the tuning sliders — shown only while the
+                                 effect is Liquid Glass AND the sliders are still collapsed. -->
+                            <StackPanel x:Name="GlassAdvancedLink" Orientation="Horizontal" HorizontalAlignment="Right"
+                                        Cursor="Hand" Background="Transparent" MouseLeftButtonUp="GlassAdvanced_Click"
+                                        Margin="16,8,16,10">
+                                <TextBlock Text="{loc:Loc LiquidGlass_Advanced}" Foreground="#0A84FF" FontSize="12"
+                                           TextDecorations="Underline" VerticalAlignment="Center" />
+                                <TextBlock Text="&#xE70D;"
+                                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10"
+                                           Foreground="#0A84FF" VerticalAlignment="Center" Margin="5,1,0,0" />
+                            </StackPanel>
 
-                    <!-- Magnification -->
-                    <StackPanel Grid.Column="2">
-                        <TextBlock Text="{loc:Loc Label_Magnification}" Style="{StaticResource GroupLabel}" Margin="0,0,0,6" />
-                        <Slider x:Name="MagnificationSlider" Style="{StaticResource MacSlider}"
-                                Minimum="0" Maximum="9" IsSnapToTickEnabled="True" TickFrequency="1"
-                                ValueChanged="MagnificationSlider_ValueChanged" />
-                        <Grid Margin="0,2,0,0">
-                            <TextBlock Text="{loc:Loc Caption_Off}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
-                            <TextBlock Text="{loc:Loc Caption_Small}" Style="{StaticResource Caption}" HorizontalAlignment="Left" Margin="30,0,0,0" />
-                            <TextBlock Text="{loc:Loc Caption_Large}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
-                        </Grid>
-                    </StackPanel>
-                </Grid>
+                            <!-- Tuning sliders (behind Advanced; Liquid Glass only). -->
+                            <StackPanel x:Name="GlassParamsPanel" Visibility="Collapsed">
+                                <!-- Blur -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_BlurRadius}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassBlurSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="0" Maximum="6" ValueChanged="GlassBlurSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <!-- Group 2: pop-up rows -->
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Row_Position}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ComboBox x:Name="PositionCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                              VerticalAlignment="Center" SelectionChanged="PositionCombo_SelectionChanged">
-                        <ComboBoxItem Content="{loc:Loc Position_Bottom}" />
-                        <ComboBoxItem Content="{loc:Loc Position_Left}" />
-                        <ComboBoxItem Content="{loc:Loc Position_Right}" />
-                        <ComboBoxItem Content="{loc:Loc Position_Top}" />
-                    </ComboBox>
-                </Grid>
+                                <!-- Distortion -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_Distortion}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassDistortionSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="0" Maximum="80" ValueChanged="GlassDistortionSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Row_GlassEffect}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ComboBox x:Name="GlassEffectCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                              VerticalAlignment="Center" SelectionChanged="GlassEffectCombo_SelectionChanged">
-                        <ComboBoxItem Content="{loc:Loc Glass_Translucent}" />
-                        <ComboBoxItem Content="{loc:Loc Glass_Acrylic}" />
-                        <ComboBoxItem Content="{loc:Loc Glass_LiquidGlass}" />
-                    </ComboBox>
-                </Grid>
+                                <!-- Tint opacity -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_Opacity}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassTintSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="0" Maximum="2" ValueChanged="GlassTintSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Row_MinimizeUsing}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ComboBox x:Name="MinimizeCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                              VerticalAlignment="Center" SelectionChanged="MinimizeCombo_SelectionChanged">
-                        <ComboBoxItem Content="{loc:Loc Minimize_Suck}" />
-                        <ComboBoxItem Content="{loc:Loc Minimize_Scale}" />
-                        <ComboBoxItem Content="{loc:Loc Minimize_Genie}" />
-                    </ComboBox>
-                </Grid>
+                                <!-- Saturation -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_Saturation}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassSaturationSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="1" Maximum="2.5" ValueChanged="GlassSaturationSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <!-- Effect speed: the slider matches the Magnification slider's width (same *,24,* grid). -->
-                <Grid Margin="16,8,16,10">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="24" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="{loc:Loc Label_EffectSpeed}" Style="{StaticResource RowLabel}"
-                               VerticalAlignment="Center" HorizontalAlignment="Left" />
-                    <StackPanel Grid.Column="2">
-                        <!-- 5 snap positions: Slow, ·, Default, ·, Fast (ticks shown). -->
-                        <Slider x:Name="EffectSpeedSlider" Style="{StaticResource MacSlider}"
-                                Minimum="0" Maximum="4" IsSnapToTickEnabled="True" TickFrequency="1"
-                                TickPlacement="BottomRight" ValueChanged="EffectSpeedSlider_ValueChanged" />
-                        <Grid Margin="0,2,0,0">
-                            <TextBlock Text="{loc:Loc Caption_Slow}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
-                            <TextBlock Text="{loc:Loc Caption_Default}" Style="{StaticResource Caption}" HorizontalAlignment="Center" />
-                            <TextBlock Text="{loc:Loc Caption_Fast}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
-                        </Grid>
-                    </StackPanel>
-                </Grid>
+                                <!-- Chromatic aberration -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_Aberration}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassAberrationSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="0" Maximum="2" ValueChanged="GlassAberrationSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <!-- Group 3: toggle rows -->
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Toggle_ShowIndicators}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ToggleButton x:Name="IndicatorsSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
-                                  VerticalAlignment="Center" Click="IndicatorsSwitch_Click" />
-                </Grid>
+                                <!-- Rim highlight (sheen) -->
+                                <Grid Margin="16,10,16,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{loc:Loc LiquidGlass_RimHighlight}" Style="{StaticResource RowLabel}"
+                                               VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <StackPanel Grid.Column="2">
+                                        <Slider x:Name="GlassRimSlider" Style="{StaticResource MacSlider}"
+                                                Minimum="0" Maximum="1" ValueChanged="GlassRimSlider_ValueChanged" />
+                                        <Grid Margin="0,2,0,0">
+                                            <TextBlock Text="{loc:Loc Caption_Less}" Style="{StaticResource Caption}" HorizontalAlignment="Left" />
+                                            <TextBlock Text="{loc:Loc Caption_More}" Style="{StaticResource Caption}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Grid>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Toggle_AnimateOpening}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ToggleButton x:Name="AnimateOpeningSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
-                                  VerticalAlignment="Center" Click="AnimateOpeningSwitch_Click" />
-                </Grid>
+                                <!-- Reset to defaults -->
+                                <StackPanel x:Name="GlassResetLink" Orientation="Horizontal" HorizontalAlignment="Right"
+                                            Cursor="Hand" Background="Transparent" MouseLeftButtonUp="GlassReset_Click"
+                                            Margin="16,8,16,10">
+                                    <TextBlock Text="{loc:Loc LiquidGlass_Reset}" Foreground="#0A84FF" FontSize="12"
+                                               TextDecorations="Underline" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+            <!-- ============ About ============ -->
+            <ScrollViewer x:Name="PageAbout" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                <StackPanel Margin="20">
+                    <!-- App icon + name + tagline + version -->
+                    <Image x:Name="AboutAppImage" Width="88" Height="88" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                    <TextBlock Text="Dockable" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,0" />
+                    <TextBlock Text="{loc:Loc About_Tagline}" FontSize="13" Foreground="#3A3A3C"
+                               HorizontalAlignment="Center" TextAlignment="Center" Margin="0,3,0,0" />
+                    <TextBlock x:Name="AboutVersionText" FontSize="12" Foreground="#6E6E73"
+                               HorizontalAlignment="Center" Margin="0,3,0,0" />
+                    <!-- Official website -->
+                    <TextBlock HorizontalAlignment="Center" FontSize="12" Margin="0,6,0,0">
+                        <Hyperlink NavigateUri="https://dockable.app"
+                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                   ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="dockable.app" /><Run
+                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                Text="&#160;&#xE8A7;" /></Hyperlink>
+                    </TextBlock>
 
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Toggle_MinimizeIntoIcon}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ToggleButton x:Name="MinimizeIntoIconSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
-                                  VerticalAlignment="Center" Click="MinimizeIntoIconSwitch_Click" />
-                </Grid>
+                    <!-- Friendly intro -->
+                    <Border Background="White" CornerRadius="10" Margin="0,16,0,0" Padding="16,14">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <TextBlock Text="{loc:Loc About_Intro}" FontSize="13" Foreground="#1D1D1F"
+                                   TextWrapping="Wrap" LineHeight="19" />
+                    </Border>
 
-                <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+                    <!-- Highlights -->
+                    <TextBlock Text="{loc:Loc About_Highlights}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
+                    <Border Background="White" CornerRadius="10" Padding="16,12">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <StackPanel>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_Magnify}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_Glass}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_Minimize}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_MenuBar}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_Localized}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
 
-                <Grid Height="44" Margin="16,0">
-                    <TextBlock Text="{loc:Loc Toggle_ShowMenuBar}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                    <ToggleButton x:Name="ShowMenuBarSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
-                                  VerticalAlignment="Center" Click="ShowMenuBarSwitch_Click" />
-                </Grid>
+                    <!-- Built with (clickable technology chips) -->
+                    <TextBlock Text="{loc:Loc About_BuiltWith}" Style="{StaticResource PageHeader}" Margin="2,18,0,8" />
+                    <Border Background="White" CornerRadius="10" Padding="14,14,14,6">
+                        <Border.Effect>
+                            <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
+                        </Border.Effect>
+                        <WrapPanel>
+                            <Border Style="{StaticResource TechChip}" Tag="https://dotnet.microsoft.com/languages/csharp"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#512BD4">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="C#" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="C# · .NET&#160;9" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource TechChip}" Tag="https://learn.microsoft.com/dotnet/desktop/wpf/"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#0A84FF">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="W" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="WPF" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource TechChip}" Tag="https://github.com/microsoft/CsWin32"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#0078D4">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="Cs" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="CsWin32" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource TechChip}" Tag="https://www.microsoft.com/windows/windows-11"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#0067C0">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="11" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="Windows 11" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource TechChip}" Tag="https://github.com/CommunityToolkit/dotnet"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#2EA44F">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="CT" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="CommunityToolkit.Mvvm" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource TechChip}" Tag="https://github.com/HavenDV/H.NotifyIcon"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#FF9500">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="H" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="H.NotifyIcon" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
+                        </WrapPanel>
+                    </Border>
 
-            </StackPanel>
-        </Border>
+                    <!-- Inspiration + author credits -->
+                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,18,0,0"
+                               FontSize="12" Foreground="#3A3A3C">
+                        <Hyperlink NavigateUri="https://www.apple.com/macos/"
+                                   RequestNavigate="Hyperlink_RequestNavigate"
+                                   ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="{loc:Loc About_InspiredBy}" /><Run
+                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                Text="&#160;&#xE8A7;" /></Hyperlink>
+                    </TextBlock>
+                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,4"
+                               FontSize="12" Foreground="#3A3A3C">
+                        <Run Text="{loc:Loc About_CreatedBy}" /><Run Text=" " /><Hyperlink
+                            NavigateUri="https://github.com/jezzlucena"
+                            RequestNavigate="Hyperlink_RequestNavigate"
+                            ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="Jezz Lucena" /><Run
+                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                Text="&#160;&#xE8A7;" /></Hyperlink>
+                    </TextBlock>
+                </StackPanel>
+            </ScrollViewer>
 
-        <!-- Taskbar section -->
-        <TextBlock Text="{loc:Loc Section_Taskbar}" FontSize="15" FontWeight="SemiBold" Foreground="#1D1D1F" Margin="2,18,0,8" />
-        <Border Background="White" CornerRadius="10">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="8" ShadowDepth="1" Opacity="0.12" Color="#000000" />
-            </Border.Effect>
-            <Grid Height="44" Margin="16,0">
-                <TextBlock Text="{loc:Loc Row_ShowTaskbar}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                <ComboBox x:Name="TaskbarCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                          VerticalAlignment="Center" SelectionChanged="TaskbarCombo_SelectionChanged">
-                    <ComboBoxItem Content="{loc:Loc Taskbar_Always}" />
-                    <ComboBoxItem Content="{loc:Loc Taskbar_Auto}" />
-                    <ComboBoxItem Content="{loc:Loc Taskbar_Never}" />
-                </ComboBox>
-            </Grid>
-        </Border>
-    </StackPanel>
-    </ScrollViewer>
+        </Grid>
+    </Grid>
 </Window>
