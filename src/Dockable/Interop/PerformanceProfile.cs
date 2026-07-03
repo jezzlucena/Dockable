@@ -62,8 +62,8 @@ public static class PerformanceProfile
     /// <summary>Fast (active-backdrop) capture rate for the Liquid Glass backdrop capturer. Capped hard
     /// at 30 fps — the glass shows a blurred, refracted backdrop, so a half-refresh rate is barely
     /// perceptible there while halving (or better) the GDI read-back + diff + upload cost — and dropped
-    /// to 5 fps in reduced mode so weak machines pay almost nothing for a moving backdrop.</summary>
-    public static int GlassCaptureFps => Reduced ? 5 : 30;
+    /// to 15 fps in reduced mode so weak machines pay much less for a moving backdrop.</summary>
+    public static int GlassCaptureFps => Reduced ? 15 : 30;
 
     /// <summary>Genie mesh resolution (columns, rows). Coarser when reduced → roughly half the per-frame
     /// vertex buffer WPF re-uploads to the GPU each warp frame.</summary>
