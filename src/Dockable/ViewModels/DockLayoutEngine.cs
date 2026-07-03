@@ -54,6 +54,9 @@ public sealed class DockLayoutEngine
     /// a fixed <see cref="SeparatorHitArea"/> that overhangs the gaps, independent of this).</summary>
     private const double SeparatorFill = 1.0 / 4.0;
 
+    /// <summary>Gap (DIP) between each end of a separator line and the bar's edges.</summary>
+    private const double SeparatorEndInset = 9;
+
     /// <summary>Fixed clickable/draggable extent of a separator along the bar (DIP), regardless of icon size.</summary>
     private const double SeparatorHitArea = 36;
 
@@ -64,13 +67,18 @@ public sealed class DockLayoutEngine
     private double _radius = 160;
     private double _restingAlong;      // resting extent of the whole row along the main axis
     private double _restingBlockMain;  // main-axis start of the resting (un-magnified) row
-    private double _alongWindow;       // window size along the main axis
+    private double _alongWindow;       // window size along the main axis (eased toward the target)
+    private double _alongWindowTarget; // recomputed main-axis size; _alongWindow glides to it per frame
     private double _crossWindow;       // window size along the cross (depth) axis
+    private double _gapExtent;         // eased width of the drag/drop placeholder gap (0 when closed)
 
     private DockItemViewModel? _dragItem;
     private bool _settling;
+    private double _lastMouseMain = double.NegativeInfinity; // cursor state of the last real frame,
+    private bool _lastHovering;                              // reused by Recompute's nominal step
     private bool _externalDrop;   // an external file is being dragged over the dock (preview a gap)
     private double _externalMain; // its cursor position along the main axis
+    private bool _externalPathDrop; // the payload is a folder/document → the gap opens in the right section
 
     public DockLayoutEngine(DockViewModel vm) => _vm = vm;
 
@@ -102,10 +110,11 @@ public sealed class DockLayoutEngine
 
     /// <summary>An external file is being dragged over the dock at <paramref name="mouseMain"/>: open
     /// a placeholder gap at the insertion point and keep tracking the cursor.</summary>
-    public void UpdateExternalDrop(double mouseMain)
+    public void UpdateExternalDrop(double mouseMain, bool pathSection)
     {
         _externalDrop = true;
         _externalMain = mouseMain;
+        _externalPathDrop = pathSection;
         _settling = false;
     }
 
@@ -115,6 +124,7 @@ public sealed class DockLayoutEngine
         if (!_externalDrop)
             return;
         _externalDrop = false;
+        _externalPathDrop = false;
         _settling = true;
     }
 
@@ -122,6 +132,11 @@ public sealed class DockLayoutEngine
     /// the placeholder gap's position).</summary>
     public int ComputeDropIndex(double mouseMain)
         => PinnedBeforeCursor(new List<DockItemViewModel>(_vm.Items), mouseMain);
+
+    /// <summary>The right-section (PinnedPaths) insertion index for a folder/document drop at
+    /// <paramref name="mouseMain"/> (matches the placeholder gap's position).</summary>
+    public int ComputeDropPathIndex(double mouseMain)
+        => PathsBeforeCursor(new List<DockItemViewModel>(_vm.Items), mouseMain);
 
     public void Recompute()
     {
@@ -142,7 +157,12 @@ public sealed class DockLayoutEngine
         double iconArea = Math.Max(grownHeight, _baseSize + _baseSize * BounceLift);
         _crossWindow = iconArea + EdgeMargin + TopHeadroom + 8;
         // Reserve room for a drag gap as well so the window never clips during a reorder.
-        _alongWindow = ComputeMaxMagnifiedAlong() + _baseSize + Gap + 2 * HPad + 30;
+        // The main-axis size is a TARGET: the actual window glides toward it per frame (Update) —
+        // stepping it here desynced the Win32 resize from the content for a frame, so the whole
+        // dock visibly jittered whenever a tile was added or removed.
+        _alongWindowTarget = ComputeMaxMagnifiedAlong() + _baseSize + Gap + 2 * HPad + 30;
+        if (_alongWindow <= 0)
+            _alongWindow = _alongWindowTarget; // first layout: nothing on screen yet, snap
 
         if (IsVertical)
         {
@@ -164,10 +184,11 @@ public sealed class DockLayoutEngine
         double magNear = EdgeMargin + (maxCell - maxRender) / 2;
         _vm.MagnifiedTop = _crossWindow - magNear - maxRender;
 
-        if (_dragItem is null && !_settling)
-            foreach (var item in _vm.Items)
-                item.CurrentScale = 1.0;
-        Update(double.NegativeInfinity, hovering: false, ReferenceFrameMs); // one nominal step
+        // One nominal step with the LAST-SEEN cursor state — never a forced "no hover". Recomputes
+        // run mid-hover (a departed tile finalizing, the 1 s refresh reconciling): the old reset of
+        // every CurrentScale to 1 + a hovering:false step made the magnification blink off and
+        // back on under the cursor — a visible width jitter on every add/remove while hovering.
+        Update(_lastMouseMain, _lastHovering, ReferenceFrameMs);
     }
 
     /// <summary>Advances the layout one frame. <paramref name="mouseMain"/> is the cursor's main-axis
@@ -176,6 +197,8 @@ public sealed class DockLayoutEngine
     /// true while animating.</summary>
     public bool Update(double mouseMain, bool hovering, double dtMs)
     {
+        _lastMouseMain = mouseMain; // remembered for Recompute's nominal step (see Recompute)
+        _lastHovering = hovering;
         double scaleSmooth = TimeSmooth(Smoothing, dtMs);
         double appearSmooth = TimeSmooth(AppearSmoothing, dtMs);
         double dragSmooth = TimeSmooth(DragPosSmoothing, dtMs);
@@ -190,6 +213,37 @@ public sealed class DockLayoutEngine
         bool gapMode = dragging || externalGap;
         double cursorMain = externalGap ? _externalMain : mouseMain;
         bool animating = false;
+
+        // The window's main-axis size glides to its recomputed target so adding/removing a tile
+        // never steps it (a step desyncs the Win32 resize from the content for one frame — jitter).
+        // _restingBlockMain follows the eased size, which keeps RestingCenterOf aims exact: for a
+        // monitor-centered dock the easing offset and the centering offset cancel in screen space.
+        if (Math.Abs(_alongWindow - _alongWindowTarget) > 0.5)
+        {
+            _alongWindow += (_alongWindowTarget - _alongWindow) * appearSmooth;
+            animating = true;
+        }
+        else
+        {
+            _alongWindow = _alongWindowTarget;
+        }
+        _restingBlockMain = (_alongWindow - _restingAlong) / 2;
+        if (IsVertical)
+            _vm.WindowHeight = _alongWindow;
+        else
+            _vm.WindowWidth = _alongWindow;
+
+        // The drag/drop placeholder gap eases open and closed too (it used to pop the bar wider).
+        double gapTarget = gapMode ? _baseSize + Gap : 0;
+        if (Math.Abs(_gapExtent - gapTarget) > 0.5)
+        {
+            _gapExtent += (gapTarget - _gapExtent) * appearSmooth;
+            animating = true;
+        }
+        else
+        {
+            _gapExtent = gapTarget;
+        }
 
         // --- Scales (magnification suppressed during a drag/drop gap for a stable parting) ---
         double cursorContent = cursorMain - _restingBlockMain;
@@ -229,15 +283,24 @@ public sealed class DockLayoutEngine
             if (!ReferenceEquals(item, _dragItem))
                 placed.Add(item);
 
-        int gapAfterPinned = gapMode ? PinnedBeforeCursor(placed, cursorMain) : 0;
-        DragInsertIndex = gapAfterPinned;
-        int gapSlot = gapMode ? 1 + gapAfterPinned : -1; // placed index where the gap opens (after Start)
+        int gapSlot = -1; // placed index where the gap opens
+        if (gapMode && (_dragItem?.IsPinnedPath == true || (externalGap && _externalPathDrop)))
+        {
+            // A pinned file/folder tile, or an external folder/document drag: the gap lives in the
+            // right section, among the path tiles.
+            DragInsertIndex = PathsBeforeCursor(placed, cursorMain);
+            gapSlot = PathGapSlot(placed, DragInsertIndex);
+        }
+        else if (gapMode)
+        {
+            DragInsertIndex = PinnedBeforeCursor(placed, cursorMain);
+            gapSlot = 1 + DragInsertIndex; // among the pinned apps (after Start)
+        }
 
         double totalAlong = -Gap;
         foreach (var item in placed)
             totalAlong += (BaseCell(item) * item.CurrentScale + Gap) * item.AppearScale; // collapses with appear
-        if (gapMode)
-            totalAlong += _baseSize + Gap; // reserve the dragged tile / drop placeholder
+        totalAlong += _gapExtent; // the dragged tile / drop placeholder (eased open and closed)
 
         double magAlong = (_alongWindow - totalAlong) / 2;
         bool animatePos = dragging || _settling || externalGap;
@@ -247,7 +310,7 @@ public sealed class DockLayoutEngine
         for (int j = 0; j < placed.Count; j++)
         {
             if (j == gapSlot)
-                along += _baseSize + Gap; // open the gap
+                along += _gapExtent; // open the gap (eased, so the tiles part smoothly)
 
             var item = placed[j];
             double appear = item.AppearScale;                       // 0..1 grow-in / shrink-out
@@ -255,10 +318,13 @@ public sealed class DockLayoutEngine
             double cellCross = _baseSize * item.CurrentScale;       // depth cell (always full)
             // Separators get a fixed clickable extent that overhangs the gaps; icons fill their cell.
             double renderAlong = (item.IsSeparator ? SeparatorHitArea : cellAlong * IconFill) * appear;
-            // Icons render at IconFill of their depth cell; separators overshoot the cell by VPad so
-            // the divider line reads bar-tall, stopping half a VPad short of each bar edge (the
-            // nearDepth below centers any render depth on the cell, so this stays centered).
-            double renderCross = (item.IsSeparator ? cellCross + VPad : cellCross * IconFill) * appear;
+            // Icons render at IconFill of their depth cell; separators span the bar's depth
+            // (cell + 2·VPad) minus SeparatorEndInset at each end, so the divider line reads
+            // bar-tall while stopping exactly that inset short of both bar edges (the nearDepth
+            // below centers any render depth on the cell, so this stays centered).
+            double renderCross = (item.IsSeparator
+                ? cellCross + 2 * (VPad - SeparatorEndInset)
+                : cellCross * IconFill) * appear;
             double targetMain = along + (cellAlong * appear - renderAlong) / 2; // center the icon within its (collapsing) cell
 
             double mainPos;
@@ -276,10 +342,17 @@ public sealed class DockLayoutEngine
 
             double nearDepth = EdgeMargin + (cellCross - renderCross) / 2;
 
-            // Launch bounce: push the icon further from the edge along the arch (no-op unless active).
+            // Launch/attention bounce: lift only the ICON via its render transform — the container
+            // (and with it the running dot at the bar edge) stays put instead of hopping along.
             if (item.UpdateBounce(_baseSize * BounceLift))
                 animating = true;
-            nearDepth += item.BounceOffset;
+            switch (Edge)
+            {
+                case DockEdge.Top: item.BounceX = 0; item.BounceY = item.BounceOffset; break;
+                case DockEdge.Left: item.BounceX = item.BounceOffset; item.BounceY = 0; break;
+                case DockEdge.Right: item.BounceX = -item.BounceOffset; item.BounceY = 0; break;
+                default: item.BounceX = 0; item.BounceY = -item.BounceOffset; break; // Bottom: up
+            }
 
             PlaceItem(item, mainPos, renderAlong, renderCross, nearDepth);
             along += (cellAlong + Gap) * appear; // advance shrinks as the cell collapses
@@ -420,6 +493,38 @@ public sealed class DockLayoutEngine
             x += bc + Gap;
         }
         return count;
+    }
+
+    /// <summary>Number of pinned file/folder tiles whose resting center is before the cursor.</summary>
+    private int PathsBeforeCursor(List<DockItemViewModel> placed, double mouseMain)
+    {
+        double width = -Gap;
+        foreach (var item in placed)
+            width += BaseCell(item) + Gap;
+        double start = (_alongWindow - width) / 2;
+
+        int count = 0;
+        double x = start;
+        foreach (var item in placed)
+        {
+            double bc = BaseCell(item);
+            if (item.IsPinnedPath && mouseMain > x + bc / 2)
+                count++;
+            x += bc + Gap;
+        }
+        return count;
+    }
+
+    /// <summary>The placed index where a dragged path tile's gap opens: the insertIndex-th slot of
+    /// the path group. When the dragged tile was the only one, the group "start" is where paths
+    /// compose — after the minimized tiles, just before the Recycle Bin.</summary>
+    private static int PathGapSlot(List<DockItemViewModel> placed, int insertIndex)
+    {
+        int firstPath = placed.FindIndex(p => p.IsPinnedPath);
+        if (firstPath >= 0)
+            return firstPath + insertIndex;
+        int recycle = placed.FindIndex(p => p.IsRecycleBin);
+        return recycle >= 0 ? recycle : placed.Count;
     }
 
     private static double Falloff(double distance, double radius)

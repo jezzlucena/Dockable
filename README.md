@@ -2,12 +2,14 @@
 
 A macOS-style **Dock for Windows 11**. It sits at the bottom of the screen, mirrors your taskbar
 (pinned + running apps), magnifies icons macOS-style on hover, opens the Start menu, optionally hides
-the Windows taskbar, and replaces the window minimize/restore with a **genie**, **scale**, or **suck**
-warp into the dock. Fully localized — English, Português (Brasil), Español, Уукраїнська, and 中文.
+the Windows taskbar, pins **files and folders with macOS-style stacks** (fan / grid / list views),
+can **auto-hide** like the real Dock, ships an optional macOS-style **menu bar**, and replaces the
+window minimize/restore with a **genie**, **scale**, or **suck** warp into the dock. Fully
+localized — English, Português (Brasil), Español, Уукраїнська, and 中文.
 
 Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
 
-*Proudly vibe coded.*
+*Proudly vibe coded with [Claude](https://claude.com/claude-code).*
 
 ## Features
 
@@ -21,6 +23,12 @@ Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
 - **Icons cast a soft layered drop-shadow.**
 - **Group separators** between pinned apps, running apps, and minimized windows.
 - **UI sound effects** for actions like emptying the Recycle Bin, dragging to the bin, and unpinning.
+- **Windows 11-style context menus** everywhere — rounded, shadowed, and following the Light/Dark
+  theme. Right-clicking empty dock space opens a macOS-style Dock menu: Task Manager, hiding and
+  magnification toggles, and position / minimize-effect pickers with checkmarks.
+- **Auto-hide** (*Automatically hide and show the Dock*): the dock slides off its edge when idle and
+  glides back when the cursor touches the screen edge — and it stops reserving screen space, so
+  maximized windows get the full display.
 
 ### Apps & the taskbar mirror
 - **Start tile** opens the Windows Start menu.
@@ -31,8 +39,34 @@ Created by **[Jezz Lucena](https://github.com/jezzlucena)**.
   (your Windows taskbar is never modified). Updates live (1s poll + a watch on the pinned folder).
 - **Running (unpinned) apps keep a stable order** by when they were opened — they don't reshuffle as
   you focus different windows.
-- Crisp, alpha-correct icons extracted at up to 256px via the Windows shell.
+- Crisp, alpha-correct icons extracted at up to 256px via the Windows shell — including **real SVG
+  rendering** for `.svg`/`.svgz` files.
+- **Launch & attention bounce**: an app's icon hops once when it opens a window, and **three times
+  when it demands attention** (the flashing-taskbar-button state) — the running dot stays put.
 - **Recycle Bin** pinned at the far right, with a state-aware empty/full icon.
+
+### Files & folders (macOS-style stacks)
+- **Pin files and folders** to the dock's right section (next to the Recycle Bin) by dropping them
+  from Explorer — the left side stays reserved for app shortcuts. Your **Downloads** folder comes
+  pinned out of the box.
+- Folders offer the full macOS menu: **Sort by** (Name / Date Added / Date Modified / Date Created /
+  Kind), **Display as** (Folder icon or a **Stack** — a composite of the folder's top items), and
+  **View content as**:
+  - **Fan** — items arc upward out of the tile with names on pills, and retract in reverse.
+  - **Grid** — a rounded balloon with all items in a scrollable grid, scaling out of the tile.
+  - **List** — a menu with icons and full file names.
+  - **Automatic** — fan for small folders, grid for big ones.
+- Click a file to open it with its default app; drag items **out of a fan or grid** onto the dock to
+  pin them, into Explorer to copy them, or onto the dock's Recycle Bin to delete them. Reorder or
+  remove pinned files/folders by dragging, like app pins.
+
+### Menu bar (optional, on by default)
+- A thin macOS-style **menu bar** across the top of the primary monitor: a Windows-logo menu (About
+  This PC, System Settings, Task Manager, recent apps, power/session actions), the focused app's
+  **name and its real menus** ("File", "Edit", … — mirrored globally for classic Win32 apps),
+  plus a status cluster: tray overflow, Quick Settings, battery, Notifications, keyboard layout, and
+  a clock. Items light up with a rounded highlight while their menu is open.
+- Hides itself during full-screen apps/games and releases its reserved strip while hidden.
 
 ### Drag & drop
 - **Drag a pinned icon to reorder** it; drag an external file from Explorer onto the dock to pin it.
@@ -93,13 +127,16 @@ the dock) or toggle **Keep in Dock**. It also **minimizes into the dock** like a
 or its own icon, per *Minimize windows into application icon*). Its pinned shortcut is added on first
 run (to the right of your taskbar pins) and can be removed like any other pin.
 
-The window itself:
-- **System** — **Language** picker and **Open at login** (+ a shortcut to Windows *Startup Apps*).
-- **Appearance** — Light / Dark / Auto tiles (each previews the dock in that mode).
-- **Dock** — **Size** and **Magnification** sliders; **Position on screen**; **Glass Effect**
-  (Translucent / Acrylic / Liquid Glass); **Minimize windows using** (Suck / Scale / Genie);
-  **Effect Speed**; and toggles for running indicators, open-animation, and minimize-into-icon.
-- **Taskbar** — automatically hide the Windows taskbar.
+The window itself (sidebar panels):
+- **General** — **Language**, **Performance** (Automatic / Quality / Performance), **Open at login**
+  (+ a shortcut to Windows *Startup Apps*), and the **Appearance** Light / Dark / Auto tiles.
+- **Dock & Menu Bar** — **Size** and **Magnification** sliders; **Position on screen**;
+  **Glass Effect** (Translucent / Acrylic / Liquid Glass); **Minimize windows using**
+  (Suck / Scale / Genie); **Effect Speed**; toggles for running indicators, open-animation,
+  minimize-into-icon, and **Automatically hide and show the Dock**; the **menu bar** toggle; and the
+  Windows-taskbar visibility.
+- **Liquid Glass** — power-user tuning for the glass shader (blur, distortion, saturation, …).
+- **About** — version, highlights, the stack (with links), and credits.
 - (Position on screen currently only implements the bottom edge; the rest are live.)
 
 ### Glass / backdrop
@@ -112,7 +149,8 @@ The window itself:
 ## Tech stack
 - **C# 12 + WPF** on **.NET 9** (`net9.0-windows10.0.22621.0`), x64, unpackaged.
 - **CsWin32** for source-generated Win32 interop (shell icons, AppBar, window styles, hooks).
-- **CommunityToolkit.Mvvm** for view-models; **H.NotifyIcon.Wpf** for the tray icon.
+- **CommunityToolkit.Mvvm** for view-models; **H.NotifyIcon.Wpf** for the tray icon;
+  **SharpVectors** for rendering SVG file icons.
 - **In-code localization** (no `.resx`/satellite assemblies): a small `Loc` service + a
   `{loc:Loc Key=…}` XAML markup extension that updates bound text live on a language change.
 - Per-monitor-v2 DPI awareness declared in `app.manifest`.
@@ -170,22 +208,24 @@ src/Dockable/
   App.xaml(.cs)            Entry point; single-instance, crash logging, taskbar restore, language init
   DockWindow.xaml(.cs)     The dock: layout, positioning, tray menu, magnification loop, drag,
                            themes, hover label, minimize orchestration
-  SettingsWindow.xaml(.cs) "Dock Preferences" window
-  AboutWindow.xaml(.cs)    "About Dockable" window (icon, version, stack, author credit)
+  MenuBarWindow.xaml(.cs)  Optional macOS-style top menu bar (logo menu, global app menus, status cluster)
+  SettingsWindow.xaml(.cs) "Dock Preferences" window (General / Dock & Menu Bar / Liquid Glass / About)
   ConfirmDialog.cs / InputDialog.cs  Small code-built Yes/No and text-prompt dialogs
   Sounds.cs                Short UI sound effects (WAV) under Assets/Sounds
   app.manifest             Per-monitor-v2 DPI awareness
   NativeMethods.txt        CsWin32 API list
+  Themes/                  ModernMenu.xaml — Windows 11-style context menus, applied app-wide
   Localization/            Loc (runtime service), LocData (per-language string tables),
                            LocExtension ({loc:Loc Key=…} markup extension)
-  Models/                  DockItem, DockItemKind, DockSettings (+ DockTheme / GlassEffect /
-                           MinimizeEffect enums)
+  Models/                  DockItem, DockItemKind, DockSettings, PinnedPath (pinned files/folders +
+                           their Sort/Display/View options)
   ViewModels/              DockViewModel, DockItemViewModel, DockLayoutEngine (fisheye + drag layout)
   Services/                SettingsStore (atomic JSON persistence)
-  Shell/                   ShortcutService (launch + shell icon extraction)
+  Shell/                   ShortcutService (launch + shell icon extraction), FolderContents (sorted
+                           folder listing), StackIcon (composite stack tiles), SvgIcon (SVG rendering)
   Interop/                 Start menu, monitors/DPI, AppBar, taskbar auto-hide, taskbar mirror,
                            pin matching, minimize hooks (WinEvent + low-level gesture interception),
-                           window control, system theme, Recycle Bin
+                           window control, system theme, Recycle Bin, known folders, menu-bar interop
   Genie/                   Window capture + thumbnail cache; Genie / Scale animators
                            (IMinimizeAnimator); acrylic/liquid-glass backdrop; pre-warmed overlays
   Converters/              XAML value converters

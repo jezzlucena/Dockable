@@ -18,41 +18,59 @@
         <!-- Theme brushes (light defaults; ApplyTheme() swaps these at runtime for light/dark). -->
         <SolidColorBrush x:Key="BarBackgroundBrush" Color="#80FFFFFF" />
         <SolidColorBrush x:Key="MenuTextBrush" Color="#1D1D1F" />
+        <!-- Active/selected item pill: almost-transparent black on Light, white on Dark. -->
+        <SolidColorBrush x:Key="MenuHighlightBrush" Color="#17000000" />
         <conv:BoolToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>
 
-    <!-- Full-width flat bar flush to the top edge (no border, no corner radius). -->
-    <Border Background="{DynamicResource BarBackgroundBrush}">
-        <Grid Margin="12,0">
+    <!-- Full-width flat bar flush to the top edge (no border, no corner radius). Right-click on
+         empty bar space shows the same dock-wide menu as the dock's empty space. -->
+    <Border Background="{DynamicResource BarBackgroundBrush}"
+            MouseRightButtonUp="Bar_RightClick">
+        <!-- The bar's left inset lives INSIDE the Windows-logo button (as padding, not a grid
+             margin) so its click target spans the bar's full height from the very left edge. -->
+        <Grid Margin="0,0,12,0">
             <!-- Leading: Windows logo (opens Start, like the dock's Start tile) + focused window title. -->
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Left"
-                        VerticalAlignment="Center">
+                        VerticalAlignment="Stretch">
+                <!-- Interactive items sit inside a "pill" Border (fixed 22px height, radius 11 —
+                     fully round) that ActivateHighlight/FlashPill paint with MenuHighlightBrush
+                     while the item's menu is open. Pill padding is offset by negative margins so
+                     the text/glyph positions match the padless layout exactly. -->
                 <Border x:Name="StartButton"
                         Background="Transparent"
                         Cursor="Hand"
-                        VerticalAlignment="Center"
-                        Margin="0,0,12,0"
+                        Padding="4,0,4,0"
                         ToolTip="Menu"
                         MouseLeftButtonUp="WindowsLogo_Click">
-                    <!-- Windows 11 logo (same geometry as the dock's Start tile) tinted to match the
-                         menu-bar text instead of the dock's blue. -->
-                    <Viewbox Width="15" Height="15">
-                        <Path Fill="{DynamicResource MenuTextBrush}"
-                              Data="M0,0 H2311 V2310 H0 Z M2564,0 H4875 V2310 H2564 Z M0,2564 H2311 V4875 H0 Z M2564,2564 H4875 V4875 H2564 Z" />
-                    </Viewbox>
+                    <Border x:Name="StartPill"
+                            Height="22" CornerRadius="11" Padding="8,0"
+                            Background="Transparent"
+                            VerticalAlignment="Center">
+                        <!-- Windows 11 logo (same geometry as the dock's Start tile) tinted to match
+                             the menu-bar text instead of the dock's blue. -->
+                        <Viewbox Width="15" Height="15" VerticalAlignment="Center">
+                            <Path Fill="{DynamicResource MenuTextBrush}"
+                                  Data="M0,0 H2311 V2310 H0 Z M2564,0 H4875 V2310 H2564 Z M0,2564 H2311 V4875 H0 Z M2564,2564 H4875 V4875 H2564 Z" />
+                        </Viewbox>
+                    </Border>
                 </Border>
                 <!-- Focused app's display name — click for the window's title-bar (system) menu. -->
-                <TextBlock x:Name="AppNameText"
-                           Text="{Binding AppName}"
-                           Foreground="{DynamicResource MenuTextBrush}"
-                           FontSize="13"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center"
-                           Background="Transparent"
-                           Cursor="Hand"
-                           TextTrimming="CharacterEllipsis"
-                           MouseLeftButtonUp="AppName_Click" />
+                <Border x:Name="AppNamePill"
+                        Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,-8,0"
+                        Background="Transparent"
+                        Cursor="Hand"
+                        VerticalAlignment="Center"
+                        MouseLeftButtonUp="AppName_Click">
+                    <TextBlock x:Name="AppNameText"
+                               Text="{Binding AppName}"
+                               Foreground="{DynamicResource MenuTextBrush}"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                </Border>
 
                 <!-- The focused app's in-window menu ("File", "Edit", …) mirrored as global menus.
                      Win32-menu apps get their real dropdown hosted under the label; UIA-only apps
@@ -68,14 +86,17 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                            <TextBlock Text="{Binding Label}"
-                                       Foreground="{DynamicResource MenuTextBrush}"
-                                       FontSize="13"
-                                       VerticalAlignment="Center"
-                                       Background="Transparent"
-                                       Cursor="Hand"
-                                       Margin="0,0,18,0"
-                                       MouseLeftButtonUp="AppMenu_Click" />
+                            <!-- 18px label spacing preserved: 8 pill pad + 10 margin − next's −8. -->
+                            <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,10,0"
+                                    Background="Transparent"
+                                    Cursor="Hand"
+                                    VerticalAlignment="Center"
+                                    MouseLeftButtonUp="AppMenu_Click">
+                                <TextBlock Text="{Binding Label}"
+                                           Foreground="{DynamicResource MenuTextBrush}"
+                                           FontSize="13"
+                                           VerticalAlignment="Center" />
+                            </Border>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
@@ -86,101 +107,104 @@
                         Orientation="Horizontal"
                         HorizontalAlignment="Right"
                         VerticalAlignment="Center">
+                <!-- Trailing items share the pill treatment: 16px item spacing preserved as
+                     8 pill pad + 8 margin − the next pill's −8. -->
                 <!-- System-tray overflow ("show hidden icons") — opens the OS flyout. -->
-                <TextBlock x:Name="TrayOverflowButton"
-                           Text="&#xE70D;"
-                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                           Foreground="{DynamicResource MenuTextBrush}"
-                           FontSize="12"
-                           VerticalAlignment="Center"
-                           Background="Transparent"
-                           Cursor="Hand"
-                           Margin="0,0,16,0"
-                           ToolTip="Show hidden icons"
-                           MouseLeftButtonUp="TrayOverflow_Click" />
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        ToolTip="Show hidden icons"
+                        MouseLeftButtonUp="TrayOverflow_Click">
+                    <TextBlock x:Name="TrayOverflowButton"
+                               Text="&#xE70D;"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               Foreground="{DynamicResource MenuTextBrush}"
+                               FontSize="12"
+                               VerticalAlignment="Center" />
+                </Border>
 
                 <!-- Quick Settings (network/sound) — opens the OS flyout via Win+A. -->
-                <StackPanel x:Name="QuickSettingsButton"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center"
-                            Background="Transparent"
-                            Cursor="Hand"
-                            Margin="0,0,16,0"
-                            ToolTip="Quick Settings"
-                            MouseLeftButtonUp="QuickSettings_Click">
-                    <TextBlock Text="&#xE701;"
-                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               Foreground="{DynamicResource MenuTextBrush}"
-                               FontSize="14"
-                               VerticalAlignment="Center" />
-                    <TextBlock Text="&#xE767;"
-                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               Foreground="{DynamicResource MenuTextBrush}"
-                               FontSize="14"
-                               VerticalAlignment="Center"
-                               Margin="6,0,0,0" />
-                </StackPanel>
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        ToolTip="Quick Settings"
+                        MouseLeftButtonUp="QuickSettings_Click">
+                    <StackPanel x:Name="QuickSettingsButton"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="&#xE701;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   Foreground="{DynamicResource MenuTextBrush}"
+                                   FontSize="14"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="&#xE767;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   Foreground="{DynamicResource MenuTextBrush}"
+                                   FontSize="14"
+                                   VerticalAlignment="Center"
+                                   Margin="6,0,0,0" />
+                    </StackPanel>
+                </Border>
 
                 <!-- Battery: level glyph + percentage. Hidden on machines with no battery (desktops).
                      Click opens the OS Power & battery settings. -->
-                <StackPanel x:Name="BatteryButton"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center"
-                            Background="Transparent"
-                            Cursor="Hand"
-                            Margin="0,0,16,0"
-                            ToolTip="Power &amp; battery"
-                            Visibility="{Binding HasBattery, Converter={StaticResource BoolToVisibility}}"
-                            MouseLeftButtonUp="Battery_Click">
-                    <TextBlock Text="{Binding BatteryGlyph}"
-                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                               Foreground="{DynamicResource MenuTextBrush}"
-                               FontSize="16"
-                               VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding BatteryLabel}"
-                               Foreground="{DynamicResource MenuTextBrush}"
-                               FontSize="12"
-                               VerticalAlignment="Center"
-                               Margin="4,0,0,0" />
-                </StackPanel>
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        ToolTip="Power &amp; battery"
+                        Visibility="{Binding HasBattery, Converter={StaticResource BoolToVisibility}}"
+                        MouseLeftButtonUp="Battery_Click">
+                    <StackPanel x:Name="BatteryButton"
+                                Orientation="Horizontal"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="{Binding BatteryGlyph}"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   Foreground="{DynamicResource MenuTextBrush}"
+                                   FontSize="16"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding BatteryLabel}"
+                                   Foreground="{DynamicResource MenuTextBrush}"
+                                   FontSize="12"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0,0,0" />
+                    </StackPanel>
+                </Border>
 
                 <!-- Notifications / calendar — opens the OS flyout via Win+N. (Live tray-icon
                      replication isn't viable on Windows 11 25H2 — see the spike notes — so this is the
                      reliable, update-proof stand-in for tray access.) -->
-                <TextBlock x:Name="NotificationsButton"
-                           Text="&#xE7E7;"
-                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                           Foreground="{DynamicResource MenuTextBrush}"
-                           FontSize="14"
-                           VerticalAlignment="Center"
-                           Background="Transparent"
-                           Cursor="Hand"
-                           Margin="0,0,16,0"
-                           ToolTip="Notifications"
-                           MouseLeftButtonUp="Notifications_Click" />
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        ToolTip="Notifications"
+                        MouseLeftButtonUp="Notifications_Click">
+                    <TextBlock x:Name="NotificationsButton"
+                               Text="&#xE7E7;"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               Foreground="{DynamicResource MenuTextBrush}"
+                               FontSize="14"
+                               VerticalAlignment="Center" />
+                </Border>
 
                 <!-- Keyboard layout — click to switch the active app's input language. -->
-                <TextBlock x:Name="KeyboardText"
-                           Text="{Binding KeyboardLabel}"
-                           Foreground="{DynamicResource MenuTextBrush}"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           VerticalAlignment="Center"
-                           Background="Transparent"
-                           Cursor="Hand"
-                           Margin="0,0,16,0"
-                           MouseLeftButtonUp="Keyboard_Click" />
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        MouseLeftButtonUp="Keyboard_Click">
+                    <TextBlock x:Name="KeyboardText"
+                               Text="{Binding KeyboardLabel}"
+                               Foreground="{DynamicResource MenuTextBrush}"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                </Border>
 
                 <!-- Clock — click to open the Windows "Date & time" settings. -->
-                <TextBlock x:Name="ClockText"
-                           Text="{Binding TimeText}"
-                           Foreground="{DynamicResource MenuTextBrush}"
-                           FontSize="12"
-                           VerticalAlignment="Center"
-                           Background="Transparent"
-                           Cursor="Hand"
-                           ToolTip="Date &amp; time settings"
-                           MouseLeftButtonUp="Clock_Click" />
+                <Border Height="22" CornerRadius="11" Padding="8,0" Margin="-8,0,-8,0"
+                        Background="Transparent" Cursor="Hand" VerticalAlignment="Center"
+                        ToolTip="Date &amp; time settings"
+                        MouseLeftButtonUp="Clock_Click">
+                    <TextBlock x:Name="ClockText"
+                               Text="{Binding TimeText}"
+                               Foreground="{DynamicResource MenuTextBrush}"
+                               FontSize="12"
+                               VerticalAlignment="Center" />
+                </Border>
             </StackPanel>
         </Grid>
     </Border>

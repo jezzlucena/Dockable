@@ -33,6 +33,8 @@ public sealed partial class DockViewModel : ObservableObject
     private bool? _recycleEmpty;                          // last-seen state; null forces first load
     private List<DockItemViewModel> _appVms = new();
     private readonly Dictionary<string, DockItemViewModel> _appByKey = new();
+    private List<DockItemViewModel> _pathVms = new();       // pinned files/folders (right section)
+    private readonly Dictionary<string, DockItemViewModel> _pathByKey = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _aumidNameCache = new(); // UWP AUMID → friendly app name
     private readonly List<DockItemViewModel> _minimizedVms = new();
     private readonly List<DockItemViewModel> _departing = new(); // apps shrinking out before removal
@@ -117,6 +119,8 @@ public sealed partial class DockViewModel : ObservableObject
 
     // Separator: a 2px line across the bar — vertical for horizontal docks, horizontal for vertical
     // docks. NaN width/height = Auto, which stretches under the matching Stretch alignment.
+    // The separator line's stand-off from each bar edge comes from the layout engine
+    // (DockLayoutEngine.SeparatorEndInset, applied on both ends, centered) — no extra margin here.
     public double SeparatorWidth => IsVerticalDock ? double.NaN : 2;
     public double SeparatorHeight => IsVerticalDock ? 2 : double.NaN;
     public HorizontalAlignment SeparatorHAlign => IsVerticalDock ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;
@@ -155,10 +159,12 @@ public sealed partial class DockViewModel : ObservableObject
     public void EndItemDrag() => _layout.EndDrag();
     public int DragInsertIndex => _layout.DragInsertIndex;
 
-    // --- External (Explorer) file drag: a placeholder gap previews where a drop would land ---
-    public void UpdateExternalDrop(double mouseMain) => _layout.UpdateExternalDrop(mouseMain);
+    // --- External (Explorer) file drag: a placeholder gap previews where a drop would land.
+    // pathSection = the payload is a folder/document, so the gap opens in the right section. ---
+    public void UpdateExternalDrop(double mouseMain, bool pathSection) => _layout.UpdateExternalDrop(mouseMain, pathSection);
     public void EndExternalDrop() => _layout.EndExternalDrop();
     public int ComputeDropIndex(double mouseMain) => _layout.ComputeDropIndex(mouseMain);
+    public int ComputeDropPathIndex(double mouseMain) => _layout.ComputeDropPathIndex(mouseMain);
 
     /// <summary>Toggles the running-indicator dots (updates the live binding + persists).</summary>
     public void SetShowRunningIndicators(bool show)
@@ -206,12 +212,30 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        // Seed the user's Downloads folder as a pinned stack once (macOS ships with Downloads in
+        // the Dock, sorted by Date Added and fanning out). The flag makes removal stick.
+        if (!Settings.SeededDownloadsPin)
+        {
+            string? downloads = KnownFolders.Downloads();
+            if (!string.IsNullOrWhiteSpace(downloads) && Directory.Exists(downloads)
+                && !Settings.PinnedPaths.Any(p => string.Equals(p.Path, downloads, StringComparison.OrdinalIgnoreCase)))
+                Settings.PinnedPaths.Add(new PinnedPath
+                {
+                    Path = downloads,
+                    SortBy = FolderSortBy.DateAdded,
+                    ViewContentAs = FolderViewContentAs.Fan,
+                });
+            Settings.SeededDownloadsPin = true;
+            Save();
+        }
+
         _startVm = new DockItemViewModel(DockItem.CreateStartMenu());
         _pinSeparatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-pinned"));
         _separatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-minimized"));
         _recycleSeparatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-recycle"));
         _recycleVm = new DockItemViewModel(DockItem.CreateRecycleBin());
         RefreshRecycleBin(); // initial state + icon
+        RefreshPinnedPaths();
         ComposeItems();
         RecomputeLayout();
     }
@@ -318,6 +342,7 @@ public sealed partial class DockViewModel : ObservableObject
 
         _appVms = desired;
         RefreshRecycleBin();
+        RefreshPinnedPaths();
         ComposeItems();
 
         // After the first refresh, apps already open are the baseline; subsequent new windows bounce.
@@ -337,6 +362,122 @@ public sealed partial class DockViewModel : ObservableObject
             return;
         _recycleEmpty = empty;
         _ = _recycleVm.LoadIconAsync(IconPixelSize);
+    }
+
+    // --- Pinned files/folders (the macOS-style right section, before the Recycle Bin) ---------
+
+    /// <summary>
+    /// Rebuilds the pinned file/folder tiles from <see cref="DockSettings.PinnedPaths"/>. Reuses
+    /// existing view-models by path so icons survive refreshes; tiles for removed pins shrink out.
+    /// </summary>
+    private void RefreshPinnedPaths()
+    {
+        var desired = new List<DockItemViewModel>();
+        foreach (var pin in Settings.PinnedPaths)
+        {
+            if (string.IsNullOrWhiteSpace(pin.Path))
+                continue;
+            if (!_pathByKey.TryGetValue(pin.Path, out var vm))
+            {
+                vm = new DockItemViewModel(DockItem.CreatePinnedPath(pin.Path, Directory.Exists(pin.Path)))
+                {
+                    PathModel = pin, // before the icon load — a Stack folder composes its icon from it
+                    PathStamp = SafeFolderStamp(pin.Path),
+                };
+                vm.AppearScale = _appsInitialized ? 0.0 : 1.0; // grow in (but not at startup)
+                _pathByKey[pin.Path] = vm;
+                _ = vm.LoadIconAsync(IconPixelSize);
+            }
+            else
+            {
+                if (vm.Departing)
+                {
+                    // Re-pinned before its shrink-out finished — cancel the departure.
+                    vm.Departing = false;
+                    _departing.Remove(vm);
+                }
+                vm.PathModel = pin; // the settings object is re-created on every settings load
+
+                // A stack tile recomposes when the folder's direct contents change. The folder's
+                // last-write time is a cheap per-tick probe (it bumps on child add/remove/rename).
+                if (vm.IsPinnedFolder && pin.DisplayAs == FolderDisplayAs.Stack)
+                {
+                    DateTime stamp = SafeFolderStamp(pin.Path);
+                    if (stamp != vm.PathStamp)
+                    {
+                        vm.PathStamp = stamp;
+                        _ = vm.LoadIconAsync(IconPixelSize);
+                    }
+                }
+            }
+            if (!desired.Contains(vm))
+                desired.Add(vm);
+        }
+
+        // Pins removed from settings shrink out near their old slot; FinalizeDeparted drops them.
+        foreach (var vm in _pathByKey.Values)
+        {
+            if (desired.Contains(vm) || vm.Departing)
+                continue;
+            vm.Departing = true;
+            _departing.Add(vm);
+        }
+        foreach (var vm in _departing)
+        {
+            if (!vm.IsPinnedPath || desired.Contains(vm))
+                continue;
+            int at = _pathVms.IndexOf(vm);
+            desired.Insert(at >= 0 && at <= desired.Count ? at : desired.Count, vm);
+        }
+
+        _pathVms = desired;
+    }
+
+    /// <summary>The folder's last-write time, or MinValue when missing/unreadable.</summary>
+    private static DateTime SafeFolderStamp(string path)
+    {
+        try { return Directory.GetLastWriteTimeUtc(path); }
+        catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>Pins a file or folder to the dock's right section at <paramref name="index"/>
+    /// (appended by default; no-op when already pinned).</summary>
+    public void PinPath(string path, int index = int.MaxValue)
+    {
+        if (string.IsNullOrWhiteSpace(path)
+            || Settings.PinnedPaths.Any(p => string.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase)))
+            return;
+        Settings.PinnedPaths.Insert(
+            Math.Clamp(index, 0, Settings.PinnedPaths.Count), new PinnedPath { Path = path });
+        Save();
+        RefreshPinnedPaths();
+        ComposeItems();
+    }
+
+    /// <summary>Moves a pinned file/folder to a new index within the right-section pin list.</summary>
+    public void MovePinnedPath(DockItemViewModel item, int index)
+    {
+        if (item.PathModel is not { } pin)
+            return;
+        var list = Settings.PinnedPaths;
+        int current = list.IndexOf(pin);
+        if (current < 0)
+            return;
+        list.RemoveAt(current);
+        list.Insert(Math.Clamp(index, 0, list.Count), pin);
+        Save();
+        RefreshPinnedPaths();
+        ComposeItems();
+    }
+
+    /// <summary>Removes a pinned file/folder from the dock; its tile shrinks out.</summary>
+    public void UnpinPath(DockItemViewModel item)
+    {
+        if (item.PathModel is not { } pin || !Settings.PinnedPaths.Remove(pin))
+            return;
+        Save();
+        RefreshPinnedPaths();
+        ComposeItems();
     }
 
     private DockItemViewModel UpdateApp(string key, string name, string launchPath, List<IntPtr>? windows)
@@ -685,15 +826,19 @@ public sealed partial class DockViewModel : ObservableObject
             desired.Add(_appVms[i]);
         }
 
-        if (_minimizedVms.Count > 0)
+        // Right section: minimized thumbnails first, then the pinned folders/files (which sit next
+        // to the Recycle Bin).
+        bool hasRightSection = _pathVms.Count > 0 || _minimizedVms.Count > 0;
+        if (hasRightSection)
         {
             desired.Add(_separatorVm);
             desired.AddRange(_minimizedVms);
+            desired.AddRange(_pathVms);
         }
 
         // The Recycle Bin is always pinned to the far right. Give it its own separator only when
-        // minimized tiles aren't already the rightmost group (no separator right of minimized).
-        if (_minimizedVms.Count == 0)
+        // the right section isn't already the rightmost group (no separator right of that section).
+        if (!hasRightSection)
             desired.Add(_recycleSeparatorVm);
         desired.Add(_recycleVm);
 
@@ -726,6 +871,12 @@ public sealed partial class DockViewModel : ObservableObject
             d.Departing = false;
             if (_minimizedVms.Remove(d)) // a shrunk-out minimized-window tile
                 continue;
+            if (d.IsPinnedPath)          // a removed pinned file/folder
+            {
+                _pathByKey.Remove(d.Model.TargetPath);
+                _pathVms.Remove(d);
+                continue;
+            }
             _appByKey.Remove(d.AppKey);  // otherwise a departed taskbar app
             _appVms.Remove(d);
         }

@@ -189,6 +189,17 @@ public static class ShortcutService
             // Fall through to the default shell extraction (a blank page beats nothing).
         }
 
+        // SVGs: the shell has no native SVG thumbnailer and returns the generic association icon.
+        // Render the actual vector artwork instead, so a stack/fan full of .svg files stays
+        // meaningful. Unparsable SVGs fall through to the shell icon.
+        if (path.EndsWith(".svg", StringComparison.OrdinalIgnoreCase)
+            || path.EndsWith(".svgz", StringComparison.OrdinalIgnoreCase))
+        {
+            var svg = SvgIcon.Render(path, pixelSize);
+            if (svg is not null)
+                return svg;
+        }
+
         // Executables carry their icon in the PE resource. Extract it directly (deterministic, full-res)
         // instead of via the shell image factory, whose async cache occasionally returns a tiny low-res
         // placeholder for some apps (e.g. Cursor) — crisp on one run, favicon-sized in a square the next.
@@ -329,7 +340,7 @@ public static class ShortcutService
 
     /// <summary>
     /// Copies a 32bpp DIB (as produced by GetImage, premultiplied BGRA) into a frozen
-    /// WriteableBitmap, preserving the alpha channel and handling row orientation.
+    /// WriteableBitmap, preserving the alpha channel.
     /// </summary>
     private static unsafe ImageSource? ConvertHBitmap(HBITMAP hbmp)
     {
@@ -339,36 +350,42 @@ public static class ShortcutService
             return null;
 
         int width = ds.dsBm.bmWidth;
-        int height = ds.dsBm.bmHeight;
-        int stride = ds.dsBm.bmWidthBytes;
+        int height = Math.Abs(ds.dsBm.bmHeight);
         if (width <= 0 || height <= 0 || ds.dsBm.bmBitsPixel != 32)
             return null;
 
-        int byteCount = stride * height;
-        byte[] buffer = new byte[byteCount];
-        Marshal.Copy((IntPtr)ds.dsBm.bmBits, buffer, 0, byteCount);
+        // Read the rows via GetDIBits with an EXPLICITLY top-down target (negative biHeight): GDI
+        // then delivers the rows in exactly the order WritePixels expects, regardless of how the
+        // source DIB is stored. The old path inferred orientation from the source's biHeight sign,
+        // which some shell extraction paths mislabel — PNG/ICO thumbnails and folder icons at
+        // certain sizes arrived upside down. 32bpp BI_RGB keeps the alpha bytes intact.
+        int stride = width * 4;
+        byte[] buffer = new byte[stride * height];
+        var bmi = new BITMAPINFO();
+        bmi.bmiHeader.biSize = (uint)sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // negative = top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = 0; // BI_RGB
 
-        // The DIB's row order is given by biHeight: negative = top-down (the common case for GetImage,
-        // and what WritePixels expects), positive = bottom-up and must be flipped row-by-row. This holds
-        // uniformly for file icons AND UWP/Store AppsFolder images — don't special-case by app type (an
-        // earlier per-UWP override XOR'd this and flipped them upside down — e.g. Calculator, Xbox).
-        if (ds.dsBmih.biHeight > 0)
-            FlipRowsInPlace(buffer, stride, height);
+        HDC hdc = PInvoke.GetDC(HWND.Null);
+        try
+        {
+            int lines;
+            fixed (byte* pixels = buffer)
+                lines = PInvoke.GetDIBits(hdc, hbmp, 0, (uint)height, pixels, &bmi, DIB_USAGE.DIB_RGB_COLORS);
+            if (lines != height)
+                return null;
+        }
+        finally
+        {
+            _ = PInvoke.ReleaseDC(HWND.Null, hdc);
+        }
 
         var bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Pbgra32, null);
         bitmap.WritePixels(new Int32Rect(0, 0, width, height), buffer, stride, 0);
         bitmap.Freeze();
         return bitmap;
-    }
-
-    private static void FlipRowsInPlace(byte[] buffer, int stride, int height)
-    {
-        byte[] tmp = new byte[stride];
-        for (int top = 0, bottom = height - 1; top < bottom; top++, bottom--)
-        {
-            Buffer.BlockCopy(buffer, top * stride, tmp, 0, stride);
-            Buffer.BlockCopy(buffer, bottom * stride, buffer, top * stride, stride);
-            Buffer.BlockCopy(tmp, 0, buffer, bottom * stride, stride);
-        }
     }
 }

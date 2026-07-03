@@ -155,6 +155,12 @@ public sealed class DockSettings
     /// </summary>
     public bool ShowMenuBar { get; set; } = true;
 
+    /// <summary>
+    /// Automatically hide and show the Dock (macOS-style). Off by default. NOTE: only the setting
+    /// exists so far — the hide/reveal behavior itself is not implemented yet.
+    /// </summary>
+    public bool AutoHideDock { get; set; }
+
     /// <summary>Show the running-indicator dot under apps that have open windows.</summary>
     public bool ShowRunningIndicators { get; set; } = true;
 
@@ -177,6 +183,12 @@ public sealed class DockSettings
     /// </summary>
     public List<string>? PinnedApps { get; set; }
 
+    /// <summary>
+    /// Files and folders pinned to the dock's right section (between the app shortcuts and the
+    /// Recycle Bin, macOS-style), in display order, with each folder's Sort/Display/View options.
+    /// </summary>
+    public List<PinnedPath> PinnedPaths { get; set; } = new();
+
     /// <summary>Prompt to replicate newly-pinned taskbar shortcuts onto the dock.</summary>
     public bool AskReplicateTaskbarPins { get; set; } = true;
 
@@ -189,6 +201,12 @@ public sealed class DockSettings
     /// re-added.
     /// </summary>
     public bool SeededPreferencesPin { get; set; }
+
+    /// <summary>
+    /// Whether the default ~/Downloads folder pin was seeded once (macOS ships with Downloads in
+    /// the Dock). The flag makes removal stick — once the user unpins it, it's never re-added.
+    /// </summary>
+    public bool SeededDownloadsPin { get; set; }
 
     /// <summary>
     /// Taskbar pins we've already seen/offered (resolved targets), so only newly-added pins prompt.

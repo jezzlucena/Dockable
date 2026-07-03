@@ -105,6 +105,10 @@
                      outer = 0 10 20 / 0.12, inner = 0 4 8 / 0.18. -->
                 <Grid Visibility="{Binding ShowIconArea, Converter={StaticResource BoolToVis}}"
                       Effect="{DynamicResource IconOuterShadowEffect}">
+                    <!-- Launch/attention bounce lifts only this icon (the running dot below stays put). -->
+                    <Grid.RenderTransform>
+                        <TranslateTransform X="{Binding BounceX}" Y="{Binding BounceY}" />
+                    </Grid.RenderTransform>
                     <Image Source="{Binding Icon}"
                            Stretch="Uniform"
                            RenderOptions.BitmapScalingMode="HighQuality">
@@ -404,6 +408,25 @@
                     </Image.Effect>
                 </Image>
             </StackPanel>
+        </Popup>
+
+        <!-- Folder fan-out ("View content as: Fan"): a popup (its own hwnd, so the dock's idle
+             window-region clip can't cut it off) holding the fanned item rows, built and animated
+             in code (OpenFolderFan). Light-dismiss is MANUAL (StaysOpen=True): a subtree mouse
+             capture routes any outside click here so the fan can retract (fan back in) before the
+             popup actually closes — StaysOpen=False would snap it shut with no animation. -->
+        <Popup x:Name="FanPopup"
+               Placement="Relative"
+               PlacementTarget="{Binding ElementName=RootCanvas}"
+               AllowsTransparency="True"
+               StaysOpen="True"
+               PopupAnimation="None"
+               Closed="OnFanClosed"
+               IsOpen="False">
+            <Canvas x:Name="FanCanvas"
+                    Mouse.PreviewMouseDownOutsideCapturedElement="OnFanOutsideClick"
+                    LostMouseCapture="OnFanLostCapture"
+                    PreviewMouseUp="OnFanPreviewMouseUp" />
         </Popup>
 
     </Canvas>

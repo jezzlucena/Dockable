@@ -58,4 +58,15 @@ public sealed class DockItem
         Kind = DockItemKind.RecycleBin,
         DisplayName = "Recycle Bin",
     };
+
+    /// <summary>A pinned file or folder tile for the dock's right section. The display name is the
+    /// path's leaf (folders keep their name; files drop the extension, macOS-style).</summary>
+    public static DockItem CreatePinnedPath(string path, bool isFolder) => new()
+    {
+        Kind = isFolder ? DockItemKind.PinnedFolder : DockItemKind.PinnedFile,
+        TargetPath = path,
+        DisplayName = isFolder
+            ? (System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(path)) is { Length: > 0 } name ? name : path)
+            : System.IO.Path.GetFileNameWithoutExtension(path),
+    };
 }

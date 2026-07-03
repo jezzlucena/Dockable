@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using Dockable.Interop;
 using Dockable.Localization;
 using Dockable.Models;
@@ -89,6 +90,7 @@ public partial class SettingsWindow : Window
         IndicatorsSwitch.IsChecked = s.ShowRunningIndicators;
         AnimateOpeningSwitch.IsChecked = s.AnimateOpeningApps;
         MinimizeIntoIconSwitch.IsChecked = s.MinimizeIntoIcon;
+        AutoHideDockSwitch.IsChecked = s.AutoHideDock;
         ShowMenuBarSwitch.IsChecked = s.ShowMenuBar;
         TaskbarCombo.SelectedIndex = (int)s.TaskbarVisibility; // Always, Auto, Never (matches combo order)
 
@@ -118,6 +120,188 @@ public partial class SettingsWindow : Window
 
     /// <summary>Navigates the window to a section by id (e.g. from the dock's "About Dockable" menu).</summary>
     public void NavigateTo(string section) => ShowSection(section);
+
+    // --- Settings search (the sidebar search bar) -------------------------------------------
+
+    /// <summary>One searchable thing: a whole panel (Row = null) or an individual setting. The
+    /// display/panel names resolve through Loc at query time (search follows the UI language);
+    /// Tags are lowercase English synonyms and alternative names.</summary>
+    private sealed record SettingEntry(string Panel, string NameKey, Func<FrameworkElement?>? Row, string Tags);
+
+    private List<SettingEntry>? _settingsIndex;
+
+    private List<SettingEntry> SettingsIndex => _settingsIndex ??= new List<SettingEntry>
+    {
+        // Panels themselves — clicking navigates, with no row emphasis.
+        new("General", "Nav_General", null, "general system settings"),
+        new("DockMenuBar", "Nav_DockMenuBar", null, "dock menu bar"),
+        new("LiquidGlass", "Nav_LiquidGlass", null, "liquid glass shader backdrop"),
+        new("About", "Nav_About", null, "about version credits author highlights claude"),
+
+        // General
+        new("General", "Row_Language", () => RowOf(LanguageCombo), "language locale translation idiom culture english portugues espanol ukrainian chinese"),
+        new("General", "Row_Performance", () => RowOf(PerformanceCombo), "performance quality gpu fps framerate smooth effects battery"),
+        new("General", "Row_OpenAtLogin", () => RowOf(OpenAtLoginSwitch), "open at login startup boot autostart run when windows starts"),
+        new("General", "Section_Appearance", AppearanceTiles, "appearance theme light dark auto mode color night"),
+
+        // Dock & Menu Bar
+        new("DockMenuBar", "Label_Size", () => RowOf(SizeSlider), "size icon size small large scale resize"),
+        new("DockMenuBar", "Label_Magnification", () => RowOf(MagnificationSlider), "magnification zoom fisheye hover grow magnify enlarge"),
+        new("DockMenuBar", "Row_Position", () => RowOf(PositionCombo), "position on screen edge bottom left right side location"),
+        new("DockMenuBar", "Row_MinimizeUsing", () => RowOf(MinimizeCombo), "minimize using genie suck scale warp animation effect"),
+        new("DockMenuBar", "Label_EffectSpeed", () => RowOf(EffectSpeedSlider), "effect speed slow fast animation duration"),
+        new("DockMenuBar", "Toggle_ShowIndicators", () => RowOf(IndicatorsSwitch), "indicators dots running open applications lights"),
+        new("DockMenuBar", "Toggle_AnimateOpening", () => RowOf(AnimateOpeningSwitch), "animate opening applications bounce launch attention hop"),
+        new("DockMenuBar", "Toggle_MinimizeIntoIcon", () => RowOf(MinimizeIntoIconSwitch), "minimize into application icon tile thumbnail"),
+        new("DockMenuBar", "Toggle_AutoHideDock", () => RowOf(AutoHideDockSwitch), "automatically hide show dock autohide auto-hide hiding reveal slide"),
+        new("DockMenuBar", "Toggle_ShowMenuBar", () => RowOf(ShowMenuBarSwitch), "menu bar top bar clock keyboard battery notifications quick settings"),
+        new("DockMenuBar", "Row_ShowTaskbar", () => RowOf(TaskbarCombo), "windows taskbar show hide always auto never"),
+
+        // Liquid Glass (the tuning sliders live behind the one-way "Advanced" reveal)
+        new("LiquidGlass", "Row_GlassEffect", () => RowOf(GlassEffectCombo), "glass effect translucent acrylic liquid blur transparency background"),
+        new("LiquidGlass", "LiquidGlass_BlurRadius", () => AdvancedRowOf(GlassBlurSlider), "blur frost frosted radius advanced"),
+        new("LiquidGlass", "LiquidGlass_Distortion", () => AdvancedRowOf(GlassDistortionSlider), "distortion refraction bend rim advanced"),
+        new("LiquidGlass", "LiquidGlass_Opacity", () => AdvancedRowOf(GlassTintSlider), "tint opacity transparency alpha advanced"),
+        new("LiquidGlass", "LiquidGlass_Saturation", () => AdvancedRowOf(GlassSaturationSlider), "saturation vibrance color intensity advanced"),
+        new("LiquidGlass", "LiquidGlass_Aberration", () => AdvancedRowOf(GlassAberrationSlider), "chromatic aberration fringe rainbow advanced"),
+        new("LiquidGlass", "LiquidGlass_RimHighlight", () => AdvancedRowOf(GlassRimSlider), "rim highlight glint sheen specular shine advanced"),
+    };
+
+    private static readonly Brush ResultNameBrush = FrozenBrush("#1D1D1F");
+    private static readonly Brush ResultPanelBrush = FrozenBrush("#6E6E73");
+    private static readonly Brush ResultHoverBrush = FrozenBrush("#14000000");
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        SearchHint.Visibility = SearchBox.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        string query = SearchBox.Text.Trim();
+        SearchResults.Children.Clear();
+        if (query.Length == 0)
+        {
+            SearchResults.Visibility = Visibility.Collapsed;
+            NavList.Visibility = Visibility.Visible;
+            return;
+        }
+
+        foreach (var entry in FindSettings(query))
+            SearchResults.Children.Add(BuildSearchResultRow(entry));
+        SearchResults.Visibility = Visibility.Visible;
+        NavList.Visibility = Visibility.Collapsed;
+    }
+
+    /// <summary>Matches on the localized name first, then the panel name and English tags.</summary>
+    private List<SettingEntry> FindSettings(string query)
+    {
+        string q = query.ToLowerInvariant();
+        var byName = new List<SettingEntry>();
+        var byTag = new List<SettingEntry>();
+        foreach (var entry in SettingsIndex)
+        {
+            if (Loc.T(entry.NameKey).ToLowerInvariant().Contains(q))
+                byName.Add(entry);
+            else if (entry.Tags.Contains(q) || Loc.T(PanelNameKey(entry.Panel)).ToLowerInvariant().Contains(q))
+                byTag.Add(entry);
+        }
+        byName.AddRange(byTag);
+        return byName.Take(14).ToList();
+    }
+
+    private static string PanelNameKey(string panel) => panel switch
+    {
+        "DockMenuBar" => "Nav_DockMenuBar",
+        "LiquidGlass" => "Nav_LiquidGlass",
+        "About" => "Nav_About",
+        _ => "Nav_General",
+    };
+
+    private FrameworkElement BuildSearchResultRow(SettingEntry entry)
+    {
+        var text = new StackPanel();
+        text.Children.Add(new TextBlock { Text = Loc.T(entry.NameKey), FontSize = 13, Foreground = ResultNameBrush, TextTrimming = TextTrimming.CharacterEllipsis });
+        text.Children.Add(new TextBlock { Text = Loc.T(PanelNameKey(entry.Panel)), FontSize = 11, Foreground = ResultPanelBrush });
+
+        var row = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(8, 5, 8, 5),
+            Background = Brushes.Transparent,
+            Cursor = Cursors.Hand,
+            Child = text,
+        };
+        row.MouseEnter += (_, _) => row.Background = ResultHoverBrush;
+        row.MouseLeave += (_, _) => row.Background = Brushes.Transparent;
+        row.MouseLeftButtonUp += (_, _) => OpenSearchResult(entry);
+        return row;
+    }
+
+    private void OpenSearchResult(SettingEntry entry)
+    {
+        ShowSection(entry.Panel);
+        if (entry.Row is null)
+            return; // a whole panel — navigate only, nothing to emphasize
+
+        // Let the page lay out before scrolling to + pulsing the row.
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, () =>
+        {
+            var row = entry.Row();
+            if (row is null)
+                return;
+            row.BringIntoView();
+            PulseSettingRow(row);
+        });
+    }
+
+    /// <summary>The settings-row container (the row Grid inside a card) that hosts a named control.</summary>
+    private static FrameworkElement? RowOf(FrameworkElement control)
+    {
+        DependencyObject? node = control;
+        while (node is FrameworkElement fe)
+        {
+            if (fe is Grid && fe.Parent is StackPanel or Border)
+                return fe;
+            node = fe.Parent;
+        }
+        return null;
+    }
+
+    /// <summary>The Appearance tiles' horizontal strip (the Light/Dark/Auto row).</summary>
+    private FrameworkElement? AppearanceTiles()
+        => (LightSel.Parent as FrameworkElement)?.Parent as FrameworkElement;
+
+    /// <summary>Row resolver for the Liquid Glass tuning sliders: they sit behind the one-way
+    /// "Advanced" reveal, so expand it first, then locate the row like any other setting.</summary>
+    private FrameworkElement? AdvancedRowOf(FrameworkElement control)
+    {
+        GlassParamsPanel.Visibility = Visibility.Visible;
+        GlassAdvancedLink.Visibility = Visibility.Collapsed;
+        GlassParamsPanel.UpdateLayout(); // lay the freshly-revealed rows out so BringIntoView lands
+        return RowOf(control);
+    }
+
+    /// <summary>Pulses a row with the accent tint, then fades back to whatever was there.</summary>
+    private static void PulseSettingRow(FrameworkElement row)
+    {
+        Brush? original;
+        Action<Brush?> setBackground;
+        switch (row)
+        {
+            case Panel panel: original = panel.Background; setBackground = b => panel.Background = b; break;
+            case Border border: original = border.Background; setBackground = b => border.Background = b; break;
+            default: return;
+        }
+
+        Color restingColor = (original as SolidColorBrush)?.Color ?? Colors.Transparent;
+        var pulse = new SolidColorBrush(Color.FromArgb(0x46, 0x0A, 0x84, 0xFF));
+        setBackground(pulse);
+        var fade = new ColorAnimation(restingColor, TimeSpan.FromMilliseconds(1500))
+        {
+            BeginTime = TimeSpan.FromMilliseconds(600),
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+        };
+        fade.Completed += (_, _) => setBackground(original);
+        pulse.BeginAnimation(SolidColorBrush.ColorProperty, fade);
+    }
 
     /// <summary>Shows the page for <paramref name="id"/> (General / DockMenuBar / LiquidGlass / About)
     /// and highlights its sidebar row (accent fill + white label), like macOS System Settings.</summary>
@@ -249,6 +433,14 @@ public partial class SettingsWindow : Window
     // Click fires only on user interaction (not the constructor's IsChecked set), so no guard needed.
     private void IndicatorsSwitch_Click(object sender, RoutedEventArgs e)
         => _vm.SetShowRunningIndicators(IndicatorsSwitch.IsChecked == true);
+
+    private void AutoHideDockSwitch_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.Settings.AutoHideDock = AutoHideDockSwitch.IsChecked == true;
+        _vm.Save();
+        // The dock owns the behavior (slide out/in + releasing the AppBar reservation).
+        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.ApplyAutoHide();
+    }
 
     // Always / Auto (native auto-hide) / Never. The dock applies and persists it (and restores the
     // taskbar to its pre-launch state on close).
@@ -465,6 +657,19 @@ public partial class SettingsWindow : Window
     {
         _initializing = true;
         SizeSlider.Value = Math.Clamp(_vm.Settings.IconSize, SizeMin, SizeMax);
+        _initializing = false;
+    }
+
+    /// <summary>Re-reads the rows the dock's empty-space context menu can change while this window
+    /// is open (hiding, magnification, position, minimize effect), so the two stay in step.</summary>
+    public void SyncFromSettings()
+    {
+        _initializing = true;
+        var s = _vm.Settings;
+        MagnificationSlider.Value = MagnificationToStep(s);
+        PositionCombo.SelectedIndex = (int)s.Edge;
+        MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect;
+        AutoHideDockSwitch.IsChecked = s.AutoHideDock;
         _initializing = false;
     }
 

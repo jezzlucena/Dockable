@@ -21,6 +21,9 @@ using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.UI.WindowsAndMessaging;
+// Aliased (not namespace-imported): System.Windows.Shapes.Path would collide with System.IO.Path.
+using Ellipse = System.Windows.Shapes.Ellipse;
+using ShapePath = System.Windows.Shapes.Path;
 
 namespace Dockable;
 
@@ -143,6 +146,7 @@ public partial class DockWindow : Window
     private Point _steadyAnchor;                        // position last considered "moved"
     private bool _removeArmed;                          // dragged pinned shortcut held steady → "Remove"
     private readonly DispatcherTimer _dragSteadyTimer;  // fires after DragSteadyMs of no motion
+    private readonly DispatcherTimer _autoHideTimer;    // auto-hide idle/edge watcher (runs only when enabled)
 
     // Separator drag = resize the dock's Size setting (kept in [SizeMin, SizeMax], matching Dock Preferences).
     private const double SizeMin = 12;
@@ -174,6 +178,9 @@ public partial class DockWindow : Window
 
         _dragSteadyTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(DragSteadyMs) };
         _dragSteadyTimer.Tick += OnDragSteadyElapsed;
+
+        _autoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _autoHideTimer.Tick += OnAutoHideTick;
         LostMouseCapture += OnLostMouseCapture; // robust cleanup if a drag is interrupted
 
         _startWatchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
@@ -259,6 +266,28 @@ public partial class DockWindow : Window
         Resources["IconOuterShadowEffect"] = PerformanceProfile.ReduceIconShadows
             ? null
             : FrozenOuterIconShadow(dark ? 0.12 : 0.10);
+
+        // Windows 11-style context menus (Themes/ModernMenu.xaml) live at APPLICATION scope so
+        // every menu follows the theme — the dock's, the tray's, and the menu bar's alike.
+        var app = Application.Current.Resources;
+        if (dark)
+        {
+            app["PopupMenuBackgroundBrush"] = Brush("#F52C2C2C");
+            app["PopupMenuBorderBrush"] = Brush("#14FFFFFF");
+            app["PopupMenuForegroundBrush"] = Brush("#FFF2F2F2");
+            app["PopupMenuDisabledBrush"] = Brush("#77FFFFFF");
+            app["PopupMenuHoverBrush"] = Brush("#17FFFFFF");
+            app["PopupMenuSeparatorBrush"] = Brush("#1FFFFFFF");
+        }
+        else
+        {
+            app["PopupMenuBackgroundBrush"] = Brush("#F5F9F9F9");
+            app["PopupMenuBorderBrush"] = Brush("#1F000000");
+            app["PopupMenuForegroundBrush"] = Brush("#E4000000");
+            app["PopupMenuDisabledBrush"] = Brush("#72000000");
+            app["PopupMenuHoverBrush"] = Brush("#0F000000");
+            app["PopupMenuSeparatorBrush"] = Brush("#1A000000");
+        }
     }
 
     /// <summary>Builds the (frozen, shared) outer icon drop-shadow at the given opacity.</summary>
@@ -311,6 +340,8 @@ public partial class DockWindow : Window
             ApplyWindowSize();
     }
 
+    private double _lastReservedCross; // cross-axis size at the last AppBar reservation
+
     private void ApplyWindowSize()
     {
         if (ViewModel is null)
@@ -319,11 +350,17 @@ public partial class DockWindow : Window
         Height = ViewModel.WindowHeight;
         PositionDock();
         ApplyIdleRegion(); // re-clip to the new resting bar when the layout size changes (if idle)
-        // Keep the reserved strip in step with the dock's size (e.g. the Preferences Size slider). During
-        // a separator drag this is deferred to the drop (EndSeparatorResize) so maximized windows don't
-        // reflow on every frame.
-        if (!_separatorResize)
+        // Keep the reserved strip in step with the dock's size (e.g. the Preferences Size slider).
+        // Deferred during a separator drag (to the drop, EndSeparatorResize) and skipped while only
+        // the main-axis size is gliding (tile add/remove eases the width per frame; the reserved
+        // strip spans the full edge, so it only depends on the cross size) — otherwise maximized
+        // windows would reflow every frame.
+        double cross = IsVerticalDock ? ViewModel.WindowWidth : ViewModel.WindowHeight;
+        if (!_separatorResize && Math.Abs(cross - _lastReservedCross) > 0.5)
+        {
+            _lastReservedCross = cross;
             ReserveAppBarSpace();
+        }
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -377,7 +414,15 @@ public partial class DockWindow : Window
         CreateTrayIcon();
         ApplyWindowSize();
         ApplyTaskbarVisibility();
+        ApplyAutoHide(); // start the idle/edge watcher (and drop the AppBar strip) if enabled
         StartTaskbarMirror();
+
+        // Subscribe to shell-hook notifications (taskbar-flash → attention bounce).
+        if (_hwnd != IntPtr.Zero)
+        {
+            _shellHookMsg = PInvoke.RegisterWindowMessage("SHELLHOOK");
+            PInvoke.RegisterShellHookWindow((HWND)_hwnd);
+        }
 
         // After the dock is up, run the one-time startup prompts (defer so the dock renders first).
         Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
@@ -627,9 +672,130 @@ public partial class DockWindow : Window
     private void PositionDock()
     {
         var (left, top) = ComputePlacement();
+
+        // Auto-hide: slide the window off-screen along its edge (HideProgress 0 shown → 1 hidden).
+        double hidden = HideProgress;
+        if (hidden > 0 && ViewModel is not null)
+        {
+            switch (ViewModel.Settings.Edge)
+            {
+                case DockEdge.Top: top -= hidden * ViewModel.WindowHeight; break;
+                case DockEdge.Left: left -= hidden * ViewModel.WindowWidth; break;
+                case DockEdge.Right: left += hidden * ViewModel.WindowWidth; break;
+                default: top += hidden * ViewModel.WindowHeight; break; // Bottom
+            }
+        }
+
         Left = left;
         Top = top;
         SyncAcrylic();
+    }
+
+    // --- Auto-hide ("Automatically hide and show the Dock") --------------------------------
+
+    /// <summary>0 = fully shown, 1 = fully slid off-screen; animated by SlideDock, applied by
+    /// PositionDock (registered as a DP so a WPF DoubleAnimation can drive the slide).</summary>
+    private static readonly DependencyProperty HideProgressProperty = DependencyProperty.Register(
+        nameof(HideProgress), typeof(double), typeof(DockWindow),
+        new PropertyMetadata(0.0, static (d, _) => ((DockWindow)d).PositionDock()));
+
+    private double HideProgress
+    {
+        get => (double)GetValue(HideProgressProperty);
+        set => SetValue(HideProgressProperty, value);
+    }
+
+    private bool _dockHidden;              // target state: true = slid off-screen
+    private DateTime _lastDockActivity;    // last time the dock was hovered/interacted with
+    private const int AutoHideIdleMs = 600;   // cursor away this long → slide out
+    private const int AutoHideRevealPx = 2;   // physical-px sliver at the screen edge that reveals
+
+    /// <summary>Applies the auto-hide setting: on = release the AppBar reservation (it stays off
+    /// even while the dock is revealed) and start the idle/edge watcher; off = slide back in and
+    /// restore the reservation.</summary>
+    internal void ApplyAutoHide()
+    {
+        if (ViewModel is null)
+            return;
+        if (ViewModel.Settings.AutoHideDock)
+        {
+            _appBar?.Unregister(); // maximized windows reclaim the strip
+            _lastDockActivity = DateTime.UtcNow;
+            _autoHideTimer.Start();
+        }
+        else
+        {
+            _autoHideTimer.Stop();
+            if (_dockHidden)
+                SlideDock(hide: false);
+            ApplyBehavior(); // re-register the AppBar + reposition
+        }
+    }
+
+    /// <summary>Animates the dock off-screen along its edge, or back in.</summary>
+    private void SlideDock(bool hide)
+    {
+        if (_dockHidden == hide)
+            return;
+        _dockHidden = hide;
+        if (!hide)
+            _lastDockActivity = DateTime.UtcNow; // a fresh idle grace once revealed
+        var slide = new DoubleAnimation(hide ? 1.0 : 0.0, TimeSpan.FromMilliseconds(hide ? 260 : 200))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = hide ? EasingMode.EaseIn : EasingMode.EaseOut },
+        };
+        BeginAnimation(HideProgressProperty, slide);
+    }
+
+    // Watches the cursor: hidden → reveal when it presses the screen edge's 2px sliver; shown →
+    // slide out once it has been away from the dock (and nothing is mid-interaction) for the grace.
+    private void OnAutoHideTick(object? sender, EventArgs e)
+    {
+        if (ViewModel is null || !ViewModel.Settings.AutoHideDock || _hwnd == IntPtr.Zero
+            || !PInvoke.GetCursorPos(out var cursor))
+            return;
+
+        if (_dockHidden)
+        {
+            var monitor = Monitors.ForWindow(_hwnd).MonitorPx;
+            bool onEdge = ViewModel.Settings.Edge switch
+            {
+                DockEdge.Top => cursor.Y <= monitor.Top + AutoHideRevealPx
+                    && cursor.X >= monitor.Left && cursor.X <= monitor.Right,
+                DockEdge.Left => cursor.X <= monitor.Left + AutoHideRevealPx
+                    && cursor.Y >= monitor.Top && cursor.Y <= monitor.Bottom,
+                DockEdge.Right => cursor.X >= monitor.Right - AutoHideRevealPx
+                    && cursor.Y >= monitor.Top && cursor.Y <= monitor.Bottom,
+                _ => cursor.Y >= monitor.Bottom - AutoHideRevealPx
+                    && cursor.X >= monitor.Left && cursor.X <= monitor.Right, // Bottom
+            };
+            if (onEdge)
+                SlideDock(hide: false);
+            return;
+        }
+
+        bool overDock;
+        try
+        {
+            var p = PointFromScreen(new Point(cursor.X, cursor.Y));
+            overDock = p.X >= 0 && p.Y >= 0 && p.X <= ActualWidth && p.Y <= ActualHeight;
+        }
+        catch
+        {
+            overDock = true; // can't map (window mid-teardown) — err on staying visible
+        }
+
+        // Anything mid-interaction counts as activity: drags/resizes, an open flyout, any menu
+        // (menus hold the thread's mouse capture), or an in-flight minimize warp.
+        bool active = overDock || _dragInitiated || _separatorResize || FanPopup.IsOpen
+            || Mouse.Captured is not null || _busy.Count > 0;
+        if (active)
+        {
+            _lastDockActivity = DateTime.UtcNow;
+            return;
+        }
+        if ((DateTime.UtcNow - _lastDockActivity).TotalMilliseconds >= AutoHideIdleMs)
+            SlideDock(hide: true);
     }
 
     /// <summary>Shows/hides and configures the acrylic backdrop for the selected Glass Effect: Simple
@@ -1071,6 +1237,10 @@ public partial class DockWindow : Window
         _mouseY = p.Y;
         _lastCursor = e.GetPosition(RootCanvas);
         _hovering = true;
+        // Un-clip on move, not just MouseEnter: while a folder flyout held the mouse capture, Enter
+        // couldn't re-fire after the loop settled + clipped, so magnified icons rendered cut off at
+        // the bar top. Flag-guarded — a no-op when already unclipped.
+        ClearWindowRegion();
         HookRendering();
 
         if (_dragInitiated)
@@ -1198,7 +1368,8 @@ public partial class DockWindow : Window
         GhostRoot.BeginAnimation(OpacityProperty, fade);
     }
 
-    private static bool IsRemovable(DockItemViewModel? item) => item is { IsTaskbarApp: true, IsPinned: true };
+    private static bool IsRemovable(DockItemViewModel? item)
+        => item is { IsTaskbarApp: true, IsPinned: true } or { IsPinnedPath: true };
 
     // --- Separator drag = resize the dock (the Size setting) ---
 
@@ -1292,10 +1463,17 @@ public partial class DockWindow : Window
 
             if (removable && (overRecycle || armed))
             {
-                ViewModel.UnpinApp(item.LaunchPath);                            // drop on the Recycle Bin, or hold-to-Remove
+                // Drop on the Recycle Bin, or hold-to-Remove. For a path tile this removes the PIN
+                // only — the file/folder itself is untouched.
+                if (item.IsPinnedPath)
+                    ViewModel.UnpinPath(item);
+                else
+                    ViewModel.UnpinApp(item.LaunchPath);
                 Sounds.Play(Sounds.Remove);
                 removed = true;
             }
+            else if (item.IsPinnedPath && overDock)
+                ViewModel.MovePinnedPath(item, ViewModel.DragInsertIndex);      // reorder the right section
             else if (removable && overDock)
                 ViewModel.MovePin(item.LaunchPath, ViewModel.DragInsertIndex);  // reorder pins
             else if (unpinnedApp && overDock)
@@ -1310,6 +1488,21 @@ public partial class DockWindow : Window
         _dragCandidate = null;
         _removeArmed = false;
         e.Handled = true;
+    }
+
+    /// <summary>A window flashed its taskbar button: bounce its dock icon 3× (macOS's attention
+    /// bounce). Gated by the same "Animate opening applications" setting as the launch bounce;
+    /// repeat flash messages don't restart a bounce that's still playing.</summary>
+    private void OnAppAttentionFlash(IntPtr flashingHwnd)
+    {
+        if (ViewModel is null || !ViewModel.Settings.AnimateOpeningApps)
+            return;
+        var app = ViewModel.FindAppForWindow(flashingHwnd);
+        if (app is null || app.IsBouncing)
+            return;
+        app.StartBounce(hops: 3);
+        ClearWindowRegion(); // the hop renders above the resting bar
+        HookRendering();
     }
 
     // A drag can be interrupted (Alt+Tab, another app grabs capture). Tidy up like a snap-back.
@@ -1363,6 +1556,13 @@ public partial class DockWindow : Window
     {
         if (_appBar is null || ViewModel is null)
             return;
+
+        // Auto-hide never reserves screen space — not even while the dock is revealed.
+        if (ViewModel.Settings.AutoHideDock)
+        {
+            _appBar.Unregister();
+            return;
+        }
 
         // Reserve exactly the resting (un-magnified) dock: from the docked edge to the bar's FAR edge
         // (its small margin from the screen edge included), so a maximized window abuts the dock with no
@@ -1461,6 +1661,12 @@ public partial class DockWindow : Window
         App.Current.SetMenuBarVisible(show); // the app owns the menu bar window's lifetime
     }
 
+    /// <summary>Shell-hook code: a window flashed its taskbar button (FlashWindowEx — the "needs
+    /// attention" colored-taskbar state). HSHELL_REDRAW (6) with the HSHELL_HIGHBIT flag.</summary>
+    private const int HSHELL_FLASH = 0x8006;
+
+    private uint _shellHookMsg; // RegisterWindowMessage("SHELLHOOK"); 0 until registered
+
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         // The OS light/dark setting changed — re-theme if we're following the system.
@@ -1470,6 +1676,10 @@ public partial class DockWindow : Window
         {
             ApplyTheme();
         }
+
+        // An app is requesting attention (flashing its taskbar button): bounce its dock icon.
+        if (_shellHookMsg != 0 && (uint)msg == _shellHookMsg && wParam.ToInt64() == HSHELL_FLASH)
+            OnAppAttentionFlash(lParam);
 
         if ((uint)msg == AppBarCallbackMessage)
         {
@@ -1900,9 +2110,18 @@ public partial class DockWindow : Window
             tile.Icon = icon;
     }
 
-    /// <summary>The dock width (DIP) a window lands at, for sizing the minimize warp's final width.</summary>
+    /// <summary>The dock width (DIP) a window lands at, for sizing the minimize warp's final width.
+    /// A freshly-added tile is still growing its slot in (AppearScale 0→1), so its live RenderWidth
+    /// reads near zero at play time and the genie would neck to a dot — project the SETTLED width
+    /// (RenderWidth scales linearly with AppearScale) so the warp's thinnest point is the final
+    /// tile width, matching the slot that's opening beneath it.</summary>
     private double TileWidthOf(DockItemViewModel tile)
-        => tile.RenderWidth > 1 ? tile.RenderWidth : (ViewModel?.Settings.IconSize ?? 48);
+    {
+        double width = tile.RenderWidth;
+        if (tile.AppearScale is > 0.01 and < 0.999)
+            width /= tile.AppearScale; // mid grow-in → the width it will settle at
+        return width > 1 ? width : (ViewModel?.Settings.IconSize ?? 48);
+    }
 
     /// <summary>Loads the app icon for a minimized tile and badges it onto the thumbnail.</summary>
     private static async void LoadOverlayIcon(DockItemViewModel tile, IntPtr hwnd)
@@ -2126,8 +2345,9 @@ public partial class DockWindow : Window
             return;
         }
 
-        // Taskbar apps (pinned or running) and minimized-window tiles can be dragged.
-        _dragCandidate = item is not null && (item.IsTaskbarApp || item.IsMinimizedWindow) ? item : null;
+        // Taskbar apps (pinned or running), minimized-window tiles, and pinned files/folders drag.
+        _dragCandidate = item is not null && (item.IsTaskbarApp || item.IsMinimizedWindow || item.IsPinnedPath)
+            ? item : null;
         _dragStart = e.GetPosition(this);
         _lastCursor = e.GetPosition(RootCanvas);
         _steadyAnchor = _lastCursor;
@@ -2152,8 +2372,12 @@ public partial class DockWindow : Window
             ActivateOrLaunch(item);
         else if (item.IsStartMenu)
             OpenStartMenu();
+        else if (item.IsPinnedFolder && item.PathModel?.ViewContentAs == FolderViewContentAs.List)
+            OpenFolderListMenu(item, sender as FrameworkElement);
+        else if (item.IsPinnedFolder && item.PathModel is not null)
+            ToggleFolderFan(item); // fan/grid flyout (Automatic picks by count)
         else
-            item.Activate(); // shortcut / Recycle Bin
+            item.Activate(); // shortcut / Recycle Bin / pinned file
     }
 
     /// <summary>
@@ -2206,6 +2430,8 @@ public partial class DockWindow : Window
         {
             { IsPreferences: true } => BuildPreferencesMenu(item),
             { IsTaskbarApp: true } => BuildAppMenu(item),
+            { IsPinnedFolder: true } => BuildFolderMenu(item),
+            { IsPinnedFile: true } => BuildFileMenu(item),
             { IsSeparator: true } => BuildSeparatorMenu(),
             { IsRecycleBin: true } => BuildRecycleMenu(),
             _ => null,
@@ -2255,6 +2481,54 @@ public partial class DockWindow : Window
     private ContextMenu BuildSeparatorMenu()
     {
         var menu = new ContextMenu();
+        var taskManager = new MenuItem { Header = Loc.T("Menu_TaskManager") };
+        taskManager.Click += (_, _) => ShortcutService.Launch("taskmgr.exe");
+        menu.Items.Add(taskManager);
+        menu.Items.Add(new Separator());
+
+        var s = ViewModel!.Settings;
+
+        // Turn Hiding On/Off — flips the AutoHideDock setting (mirrors the Preferences toggle).
+        var hiding = new MenuItem { Header = Loc.T(s.AutoHideDock ? "Menu_TurnHidingOff" : "Menu_TurnHidingOn") };
+        hiding.Click += (_, _) =>
+        {
+            ViewModel!.Settings.AutoHideDock = !ViewModel.Settings.AutoHideDock;
+            ViewModel.Save();
+            ApplyAutoHide();
+            _settingsWindow?.SyncFromSettings();
+        };
+        menu.Items.Add(hiding);
+
+        var magnification = new MenuItem
+        {
+            Header = Loc.T(s.MagnificationEnabled ? "Menu_TurnMagnificationOff" : "Menu_TurnMagnificationOn"),
+        };
+        magnification.Click += (_, _) =>
+        {
+            var settings = ViewModel!.Settings;
+            settings.MagnificationEnabled = !settings.MagnificationEnabled;
+            // Re-enabling with a stale max size would read as "on" yet magnify nothing.
+            if (settings.MagnificationEnabled && settings.MaxIconSize <= settings.IconSize)
+                settings.MaxIconSize = settings.IconSize * 2;
+            ViewModel.RecomputeLayout();
+            ViewModel.Save();
+            _settingsWindow?.SyncFromSettings();
+        };
+        menu.Items.Add(magnification);
+
+        var position = new MenuItem { Header = Loc.T("Menu_PositionOnScreen") };
+        position.Items.Add(MenuChoice("Position_Left", s.Edge == DockEdge.Left, () => PickEdge(DockEdge.Left)));
+        position.Items.Add(MenuChoice("Position_Bottom", s.Edge == DockEdge.Bottom, () => PickEdge(DockEdge.Bottom)));
+        position.Items.Add(MenuChoice("Position_Right", s.Edge == DockEdge.Right, () => PickEdge(DockEdge.Right)));
+        menu.Items.Add(position);
+
+        var minimizeUsing = new MenuItem { Header = Loc.T("Menu_MinimizeUsing") };
+        minimizeUsing.Items.Add(MenuChoice("Minimize_Genie", s.MinimizeEffect == MinimizeEffect.Genie, () => PickMinimizeEffect(MinimizeEffect.Genie)));
+        minimizeUsing.Items.Add(MenuChoice("Minimize_Suck", s.MinimizeEffect == MinimizeEffect.Suck, () => PickMinimizeEffect(MinimizeEffect.Suck)));
+        minimizeUsing.Items.Add(MenuChoice("Minimize_Scale", s.MinimizeEffect == MinimizeEffect.Scale, () => PickMinimizeEffect(MinimizeEffect.Scale)));
+        menu.Items.Add(minimizeUsing);
+
+        menu.Items.Add(new Separator());
         var prefs = new MenuItem { Header = Loc.T("Menu_DockPreferences") };
         prefs.Click += (_, _) => OpenDockPreferences();
         menu.Items.Add(prefs);
@@ -2266,6 +2540,23 @@ public partial class DockWindow : Window
         exit.Click += (_, _) => Application.Current.Shutdown();
         menu.Items.Add(exit);
         return menu;
+    }
+
+    /// <summary>Context-menu pick of a dock edge: applies it and syncs the open Preferences combo.</summary>
+    private void PickEdge(DockEdge edge)
+    {
+        SetEdge(edge);
+        _settingsWindow?.SyncFromSettings();
+    }
+
+    /// <summary>Context-menu pick of a minimize effect: persists it and syncs the open Preferences combo.</summary>
+    private void PickMinimizeEffect(MinimizeEffect effect)
+    {
+        if (ViewModel is null)
+            return;
+        ViewModel.Settings.MinimizeEffect = effect;
+        ViewModel.Save();
+        _settingsWindow?.SyncFromSettings();
     }
 
     // Built-in Dock Preferences tile: Keep in Dock (pin toggle), and — while the window is open —
@@ -2294,6 +2585,805 @@ public partial class DockWindow : Window
         }
 
         return menu;
+    }
+
+    // --- Pinned file/folder menus (the macOS-style right section) ---
+
+    /// <summary>A non-clickable gray section title, macOS-menu-style (e.g. "Sort by").</summary>
+    private static MenuItem MenuSection(string locKey) => new() { Header = Loc.T(locKey), IsEnabled = false };
+
+    /// <summary>A single-select option row: a check mark marks the current choice, clicking picks
+    /// it (and persists). The presentation the choice controls comes later; only the selection is live.</summary>
+    private MenuItem MenuChoice(string locKey, bool selected, Action pick)
+    {
+        var choice = new MenuItem { Header = Loc.T(locKey), IsChecked = selected };
+        choice.Click += (_, _) => { pick(); ViewModel?.Save(); };
+        return choice;
+    }
+
+    /// <summary>Re-renders a pinned folder/file tile's icon (stack ↔ plain folder, new sort order).</summary>
+    private static void RefreshPathTileIcon(DockItemViewModel item) => _ = item.LoadIconAsync(256);
+
+    /// <summary>Options ▶ Remove from Dock / Show in File Explorer, shared by files and folders.</summary>
+    private MenuItem BuildPathOptions(DockItemViewModel item)
+    {
+        var options = new MenuItem { Header = Loc.T("Menu_Options") };
+
+        var remove = new MenuItem { Header = Loc.T("Menu_RemoveFromDock") };
+        remove.Click += (_, _) => ViewModel?.UnpinPath(item);
+        options.Items.Add(remove);
+
+        var reveal = new MenuItem { Header = Loc.T("Menu_ShowInFileExplorer") };
+        reveal.Click += (_, _) => ShortcutService.RevealInExplorer(item.Model.TargetPath);
+        options.Items.Add(reveal);
+
+        return options;
+    }
+
+    /// <summary>Open "Name": launches the pinned path (folder in Explorer, file with its default app).</summary>
+    private static MenuItem BuildOpenPath(DockItemViewModel item)
+    {
+        var open = new MenuItem { Header = string.Format(Loc.T("Menu_OpenNamed"), item.DisplayName) };
+        open.Click += (_, _) => item.Activate();
+        return open;
+    }
+
+    // Pinned-folder menu: single-select Sort by / Display as / View content as sections (each shows
+    // a check mark on the current choice), Options ▶, then Open "Name".
+    private ContextMenu BuildFolderMenu(DockItemViewModel item)
+    {
+        var menu = new ContextMenu();
+        if (item.PathModel is not { } pin)
+            return menu;
+
+        AddFolderConfigSections(menu, item, pin);
+        menu.Items.Add(new Separator());
+        menu.Items.Add(BuildPathOptions(item));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(BuildOpenPath(item));
+        return menu;
+    }
+
+    /// <summary>The Sort by / Display as / View content as single-select sections, shared between
+    /// the folder right-click menu and the List view's Options ▶ submenu.</summary>
+    private void AddFolderConfigSections(ItemsControl menu, DockItemViewModel item, PinnedPath pin)
+    {
+        // Sort by / Display as picks re-render the tile (they change the stack's content / whether
+        // the tile is a stack at all).
+        void SetSort(FolderSortBy sort) { pin.SortBy = sort; RefreshPathTileIcon(item); }
+        void SetDisplay(FolderDisplayAs display) { pin.DisplayAs = display; RefreshPathTileIcon(item); }
+
+        menu.Items.Add(MenuSection("Menu_SortBy"));
+        menu.Items.Add(MenuChoice("SortBy_Name", pin.SortBy == FolderSortBy.Name, () => SetSort(FolderSortBy.Name)));
+        menu.Items.Add(MenuChoice("SortBy_DateAdded", pin.SortBy == FolderSortBy.DateAdded, () => SetSort(FolderSortBy.DateAdded)));
+        menu.Items.Add(MenuChoice("SortBy_DateModified", pin.SortBy == FolderSortBy.DateModified, () => SetSort(FolderSortBy.DateModified)));
+        menu.Items.Add(MenuChoice("SortBy_DateCreated", pin.SortBy == FolderSortBy.DateCreated, () => SetSort(FolderSortBy.DateCreated)));
+        menu.Items.Add(MenuChoice("SortBy_Kind", pin.SortBy == FolderSortBy.Kind, () => SetSort(FolderSortBy.Kind)));
+        menu.Items.Add(new Separator());
+
+        menu.Items.Add(MenuSection("Menu_DisplayAs"));
+        menu.Items.Add(MenuChoice("DisplayAs_Folder", pin.DisplayAs == FolderDisplayAs.Folder, () => SetDisplay(FolderDisplayAs.Folder)));
+        menu.Items.Add(MenuChoice("DisplayAs_Stack", pin.DisplayAs == FolderDisplayAs.Stack, () => SetDisplay(FolderDisplayAs.Stack)));
+        menu.Items.Add(new Separator());
+
+        menu.Items.Add(MenuSection("Menu_ViewContentAs"));
+        menu.Items.Add(MenuChoice("ViewAs_Fan", pin.ViewContentAs == FolderViewContentAs.Fan, () => pin.ViewContentAs = FolderViewContentAs.Fan));
+        menu.Items.Add(MenuChoice("ViewAs_Grid", pin.ViewContentAs == FolderViewContentAs.Grid, () => pin.ViewContentAs = FolderViewContentAs.Grid));
+        menu.Items.Add(MenuChoice("ViewAs_List", pin.ViewContentAs == FolderViewContentAs.List, () => pin.ViewContentAs = FolderViewContentAs.List));
+        menu.Items.Add(MenuChoice("ViewAs_Automatic", pin.ViewContentAs == FolderViewContentAs.Automatic, () => pin.ViewContentAs = FolderViewContentAs.Automatic));
+    }
+
+    // Pinned-file menu: Options ▶ (Remove from Dock / Show in File Explorer), then Open "Name".
+    private ContextMenu BuildFileMenu(DockItemViewModel item)
+    {
+        var menu = new ContextMenu();
+        menu.Items.Add(BuildPathOptions(item));
+        menu.Items.Add(new Separator());
+        menu.Items.Add(BuildOpenPath(item));
+        return menu;
+    }
+
+    // --- Folder fan-out ("View content as: Fan") -------------------------------------------
+    //
+    // Clicking a fan folder fans its top items upward out of the tile: slot 0 (the stack's top
+    // item) nearest the dock, the deepest item highest, crowned by an "N more in File Explorer"
+    // tail. Items rise from the tile with a stagger; when the tile is displayed as a plain Folder
+    // there's no stack for them to visually emerge from, so they also fade in.
+
+    private DockItemViewModel? _fanItem;        // the folder tile whose fan is open
+    private DockItemViewModel? _fanLastClosed;  // StaysOpen=False closes on the toggle click's DOWN...
+    private DateTime _fanClosedAt;              // ...so the UP must not instantly reopen it
+    private int _fanGen;                        // stale-guard for the async enumeration
+    private ImageSource? _fanPrevIcon;          // the tile's real icon, restored when the fan closes
+    private bool _fanClosing;                   // the retraction (fan-in) is playing
+    private bool _fanIsGrid;                    // the open flyout is the grid balloon, not the fan
+    private string? _flyoutDragPath;            // path being OS-dragged out of the fan/grid (OnDrop pins it as-is)
+    private bool? _externalDragToPathSection;   // cached payload classification for the current external drag
+    private double _fanAnchorDelta;             // popup left minus the tile's center, fixed at open
+    private System.ComponentModel.PropertyChangedEventHandler? _fanAnchorFollow; // tracks the tile as it drifts
+
+    private const double FanIconSize = 46;      // entry icon (and the "more" disc) size, DIP
+    private const double FanSpacing = 58;       // vertical distance between fan slots
+    private const double FanArcPerSlot = 0.45;  // rightward drift (px per slot²): a subtle arc
+    private const double FanTopPad = 40;        // canvas headroom above the top slot (rotated labels swing up)
+
+    /// <summary>Click on a fan-enabled folder tile: opens its fan, or retracts an already-open one.</summary>
+    private void ToggleFolderFan(DockItemViewModel item)
+    {
+        if (_fanClosing)
+            return; // mid retraction — let it finish
+        if (FanPopup.IsOpen)
+        {
+            if (_fanItem == item)
+            {
+                BeginCloseFan();
+                return;
+            }
+            FanPopup.IsOpen = false; // switching folders: drop the old fan instantly
+        }
+        // The fan retracted on this click's mouse-down (outside-capture dismiss); swallow the up.
+        if (_fanLastClosed == item && (DateTime.UtcNow - _fanClosedAt).TotalMilliseconds < 400)
+        {
+            _fanLastClosed = null;
+            return;
+        }
+        OpenFolderFlyout(item);
+    }
+
+    /// <summary>Enumerates the folder once, then shows the fan or the grid per its "View content
+    /// as" — Automatic picks the fan for up to 9 items and the grid for 10 or more (macOS-style).</summary>
+    private async void OpenFolderFlyout(DockItemViewModel item)
+    {
+        if (ViewModel is null || item.PathModel is not { } pin)
+            return;
+
+        int gen = ++_fanGen;
+        var entries = await Task.Run(() => FolderContents.GetSorted(pin.Path, pin.SortBy));
+        if (gen != _fanGen || ViewModel is null)
+            return; // superseded by a newer open/close while enumerating
+
+        var view = pin.ViewContentAs;
+        if (view == FolderViewContentAs.Automatic)
+            view = entries.Count <= 9 ? FolderViewContentAs.Fan : FolderViewContentAs.Grid;
+
+        if (view == FolderViewContentAs.Grid)
+            ShowFolderGrid(item, pin, entries);
+        else
+            ShowFolderFan(item, pin, entries);
+    }
+
+    private void ShowFolderFan(DockItemViewModel item, PinnedPath pin, List<FileSystemInfo> entries)
+    {
+        if (ViewModel is null)
+            return;
+
+        var top = entries.Take(FolderContents.MaxItems).ToList();
+        int remaining = entries.Count - top.Count;
+
+        FanCanvas.Children.Clear();
+
+        // Slot 0 is the bottom of the fan (nearest the dock) and holds the TOP of the stack; the
+        // "more in File Explorer" tail takes the highest slot.
+        int slots = top.Count + 1;
+        double fanHeight = slots * FanSpacing + FanTopPad; // headroom: rotated labels swing upward
+
+        // Labels sit LEFT of the icon column, so each row is right-anchored on its icon. Build and
+        // measure every row first: the widest label sets how far left of the icons the canvas (and
+        // the popup) must extend for all the icons to stay on the arc.
+        var rows = new List<FrameworkElement>(slots);
+        var rowWidths = new List<double>(slots);
+        double labelExtent = 0; // the widest (label + gap) portion left of an icon
+        for (int k = 0; k < slots; k++)
+        {
+            bool isTail = k == slots - 1;
+            // Fan labels show the real file name, extension included (folders have none — ha!).
+            FrameworkElement entry = isTail
+                ? BuildFanEntry(BuildFanTailIcon(), FanTailLabel(remaining), pin.Path, draggable: false)
+                : BuildFanEntry(BuildFanItemIcon(top[k].FullName), top[k].Name, top[k].FullName, draggable: true);
+            entry.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            rows.Add(entry);
+            rowWidths.Add(entry.DesiredSize.Width);
+            labelExtent = Math.Max(labelExtent, entry.DesiredSize.Width - FanIconSize);
+        }
+
+        for (int k = 0; k < slots; k++)
+        {
+            var entry = rows[k];
+            double iconLeft = labelExtent + FanArcPerSlot * k * k; // the icon column follows the arc
+            Canvas.SetLeft(entry, iconLeft - (rowWidths[k] - FanIconSize)); // right-anchor on the icon
+            Canvas.SetTop(entry, fanHeight - (k + 1) * FanSpacing);
+
+            // Each row (label + icon together) tilts with the fan: 0° at the bottom, growing to the
+            // arc's own tangent at the top, pivoting on the icon's center — now the row's RIGHT end.
+            // The rise translation is applied after the rotation so entries still travel straight up.
+            double angle = Math.Atan2(2 * FanArcPerSlot * k, FanSpacing) * 180.0 / Math.PI;
+            var rise = new TranslateTransform(0, k * FanSpacing);
+            entry.RenderTransform = new TransformGroup
+            {
+                Children =
+                {
+                    new RotateTransform(angle, rowWidths[k] - FanIconSize / 2, FanIconSize / 2),
+                    rise,
+                },
+            };
+            var delay = TimeSpan.FromMilliseconds(k * 18);
+            rise.BeginAnimation(TranslateTransform.YProperty,
+                new DoubleAnimation(k * FanSpacing, 0, TimeSpan.FromMilliseconds(280))
+                {
+                    BeginTime = delay,
+                    EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                });
+            // The icons fade in as the fan starts (the shorter fade finishes while the rise is
+            // still traveling, so entries materialize first, then glide into place).
+            entry.Opacity = 0;
+            entry.BeginAnimation(OpacityProperty,
+                new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)) { BeginTime = delay });
+
+            FanCanvas.Children.Add(entry);
+        }
+
+        // The popup's hwnd clips at the canvas size — cover the widest label, the arc's drift, and
+        // shadow headroom so no label is ever cut off.
+        FanCanvas.Width = labelExtent + FanIconSize + FanArcPerSlot * (slots - 1) * (slots - 1) + 32;
+        FanCanvas.Height = fanHeight;
+
+        // Anchor the icon column over the tile (labels extend left of it). Vertically, the first
+        // (bottom) fan icon's bottom edge sits 20px above the top of a fully-magnified dock icon,
+        // so the fan clears the folder tile even at full magnification.
+        FanPopup.HorizontalOffset = item.X + item.RenderWidth / 2 - FanIconSize / 2 - labelExtent;
+        double bottomIconBottom = fanHeight - FanSpacing + FanIconSize; // canvas-Y of that edge
+        FanPopup.VerticalOffset = ViewModel.MagnifiedTop - 20 - bottomIconBottom;
+        _fanIsGrid = false;
+        ShowFlyoutPopup(item);
+    }
+
+    /// <summary>Opens the flyout popup for <paramref name="item"/>: swaps the tile to the
+    /// open-stack indicator and takes the subtree mouse capture that drives manual light-dismiss.</summary>
+    private void ShowFlyoutPopup(DockItemViewModel item)
+    {
+        _fanItem = item;
+        // While the flyout is open the tile shows the macOS open-stack indicator instead of its icon.
+        _fanPrevIcon = item.Icon;
+        item.Icon = FanOpenTileIcon();
+
+        // Follow the tile: magnification keeps drifting the icons (the cursor still sweeps the bar
+        // while the flyout is up), so re-anchor the popup whenever the tile's center moves.
+        _fanAnchorDelta = FanPopup.HorizontalOffset - (item.X + item.RenderWidth / 2);
+        _fanAnchorFollow = (_, e) =>
+        {
+            if (e.PropertyName is nameof(DockItemViewModel.X) or nameof(DockItemViewModel.RenderWidth)
+                && _fanItem is { } anchored)
+                FanPopup.HorizontalOffset = anchored.X + anchored.RenderWidth / 2 + _fanAnchorDelta;
+        };
+        item.PropertyChanged += _fanAnchorFollow;
+
+        FanPopup.IsOpen = true;
+
+        // Manual light-dismiss: once the popup has rendered, a subtree capture routes any click
+        // outside the flyout to OnFanOutsideClick so the retraction can play before the close.
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (FanPopup.IsOpen && !_fanClosing)
+                Mouse.Capture(FanCanvas, CaptureMode.SubTree);
+        }, DispatcherPriority.Input);
+    }
+
+    /// <summary>Retracts the fan — the opening animation in reverse (entries sink back into the
+    /// tile, top rows first; Folder mode also fades them out) — then really closes the popup.</summary>
+    private void BeginCloseFan()
+    {
+        if (!FanPopup.IsOpen || _fanClosing)
+            return;
+        _fanClosing = true;
+        Mouse.Capture(null); // give input back immediately; the retraction is purely visual
+
+        double totalMs;
+        if (_fanIsGrid)
+        {
+            // The grid balloon scales back into the folder tile (the opening mirrored) and fades.
+            foreach (UIElement child in FanCanvas.Children)
+            {
+                child.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(150)));
+                if (child is FrameworkElement { RenderTransform: ScaleTransform scale })
+                {
+                    var shrink = new DoubleAnimation(0.15, TimeSpan.FromMilliseconds(180))
+                    {
+                        EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+                    };
+                    scale.BeginAnimation(ScaleTransform.ScaleXProperty, shrink);
+                    scale.BeginAnimation(ScaleTransform.ScaleYProperty, shrink);
+                }
+            }
+            totalMs = 190;
+        }
+        else
+        {
+            int slots = FanCanvas.Children.Count;
+            const double durationMs = 240;
+            double maxDelay = 0;
+            for (int k = 0; k < slots; k++)
+            {
+                var entry = (FrameworkElement)FanCanvas.Children[k];
+                double delay = (slots - 1 - k) * 10; // top rows start first — the opening mirrored
+                maxDelay = Math.Max(maxDelay, delay);
+
+                // Animate from the CURRENT offset (an interrupted opening reverses mid-flight).
+                if (entry.RenderTransform is TransformGroup { Children: [_, TranslateTransform rise] })
+                    rise.BeginAnimation(TranslateTransform.YProperty,
+                        new DoubleAnimation(k * FanSpacing, TimeSpan.FromMilliseconds(durationMs))
+                        {
+                            BeginTime = TimeSpan.FromMilliseconds(delay),
+                            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn },
+                        });
+                // The opening mirrored: icons fade out at the END of the retraction, vanishing just
+                // as they land back in the tile.
+                entry.BeginAnimation(OpacityProperty,
+                    new DoubleAnimation(0, TimeSpan.FromMilliseconds(140))
+                    {
+                        BeginTime = TimeSpan.FromMilliseconds(delay + 100),
+                    });
+            }
+            totalMs = maxDelay + durationMs + 20;
+        }
+
+        var done = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(totalMs) };
+        done.Tick += (_, _) =>
+        {
+            done.Stop();
+            FanPopup.IsOpen = false; // OnFanClosed does the state cleanup + tile-icon restore
+        };
+        done.Start();
+    }
+
+    // Any mouse-down outside the fan (we hold a subtree capture while it's open) retracts it.
+    private void OnFanOutsideClick(object sender, MouseButtonEventArgs e) => BeginCloseFan();
+
+    // Capture stolen (a dock drag, another popup, Alt-Tab): retract rather than linger open.
+    private void OnFanLostCapture(object sender, MouseEventArgs e)
+    {
+        if (!FanPopup.IsOpen || _fanClosing)
+            return;
+        // A child inside the flyout taking capture (the grid's scrollbar being dragged) is fine —
+        // OnFanPreviewMouseUp retakes the subtree capture when it releases.
+        if (Mouse.Captured is Visual captured && FanCanvas.IsAncestorOf(captured))
+            return;
+        BeginCloseFan();
+    }
+
+    // A child (e.g. the grid's scrollbar) released its capture: retake the subtree capture that
+    // drives light-dismiss, once the release has fully processed.
+    private void OnFanPreviewMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            if (FanPopup.IsOpen && !_fanClosing && Mouse.Captured is null)
+                Mouse.Capture(FanCanvas, CaptureMode.SubTree);
+        }, DispatcherPriority.Input);
+    }
+
+    // Records what just closed so the tile click that dismissed the popup doesn't reopen it.
+    private void OnFanClosed(object? sender, EventArgs e)
+    {
+        if (_fanItem is { } openItem)
+        {
+            openItem.Icon = _fanPrevIcon; // put the folder/stack icon back
+            if (_fanAnchorFollow is not null)
+                openItem.PropertyChanged -= _fanAnchorFollow;
+        }
+        _fanAnchorFollow = null;
+        _fanPrevIcon = null;
+        _fanLastClosed = _fanItem;
+        _fanClosedAt = DateTime.UtcNow;
+        _fanItem = null;
+        _fanClosing = false;
+        _fanGen++; // cancel any in-flight enumeration
+    }
+
+    private static ImageSource? _fanOpenTileIcon;
+
+    /// <summary>The tile icon shown while a folder's fan is open: a semi-transparent rounded square
+    /// with a dark downward chevron (macOS's open-stack indicator). Rendered once and cached.</summary>
+    private static ImageSource FanOpenTileIcon()
+    {
+        if (_fanOpenTileIcon is not null)
+            return _fanOpenTileIcon;
+
+        const int size = 256;
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            // Translucent light square with rounded corners and a faint rim.
+            var fill = new SolidColorBrush(Color.FromArgb(0x59, 0xC9, 0xC9, 0xC9));
+            var rim = new Pen(new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF)), 4);
+            dc.DrawRoundedRectangle(fill, rim, new Rect(4, 4, size - 8, size - 8), 52, 52);
+
+            // Downward chevron, centered.
+            var chevron = new StreamGeometry();
+            using (var g = chevron.Open())
+            {
+                g.BeginFigure(new Point(84, 112), isFilled: false, isClosed: false);
+                g.LineTo(new Point(128, 156), isStroked: true, isSmoothJoin: true);
+                g.LineTo(new Point(172, 112), isStroked: true, isSmoothJoin: true);
+            }
+            chevron.Freeze();
+            var stroke = new Pen(new SolidColorBrush(Color.FromArgb(0xD9, 0x1E, 0x1E, 0x1E)), 18)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round,
+                LineJoin = PenLineJoin.Round,
+            };
+            dc.DrawGeometry(null, stroke, chevron);
+        }
+
+        var bitmap = new RenderTargetBitmap(size, size, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return _fanOpenTileIcon = bitmap;
+    }
+
+    /// <summary>
+    /// Makes a fan/grid row draggable as a real file (OS drag): dropping it on the dock pins it to
+    /// the right section (see OnDrop), dropping it in Explorer copies it, dropping it on the dock's
+    /// Recycle Bin recycles it. The flyout retracts on its own when the drag starts (the OS drag
+    /// steals the light-dismiss capture).
+    /// </summary>
+    private void AttachFlyoutDrag(FrameworkElement row, string path)
+    {
+        Point down = default;
+        bool pressed = false;
+        row.PreviewMouseLeftButtonDown += (_, e) => { down = e.GetPosition(row); pressed = true; };
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (!pressed || e.LeftButton != MouseButtonState.Pressed)
+                return;
+            var p = e.GetPosition(row);
+            if (Math.Abs(p.X - down.X) < SystemParameters.MinimumHorizontalDragDistance
+                && Math.Abs(p.Y - down.Y) < SystemParameters.MinimumVerticalDragDistance)
+                return;
+            pressed = false;
+            _flyoutDragPath = path;
+            try
+            {
+                var data = new DataObject(DataFormats.FileDrop, new[] { path });
+                DragDrop.DoDragDrop(row, data, DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
+            }
+            finally
+            {
+                _flyoutDragPath = null;
+            }
+        };
+    }
+
+    /// <summary>Height of a fan label pill; its corner radius is half this, so it's fully rounded.</summary>
+    private const double FanPillHeight = 26;
+
+    /// <summary>One fan row: the icon with a fully-rounded name pill; click launches; item rows
+    /// (not the tail) can be dragged out onto the dock or into Explorer.</summary>
+    private FrameworkElement BuildFanEntry(UIElement icon, string label, string launchPath, bool draggable)
+    {
+        var text = new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        text.SetResourceReference(TextBlock.ForegroundProperty, "LabelTextBrush");
+
+        var pill = new Border
+        {
+            Height = FanPillHeight,
+            CornerRadius = new CornerRadius(FanPillHeight / 2),
+            Padding = new Thickness(12, 0, 12, 0),
+            Margin = new Thickness(0, 0, 8, 0),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = TranslucentLabelBackground(),
+            Child = text,
+            Effect = new DropShadowEffect { BlurRadius = 10, ShadowDepth = 2, Opacity = 0.4, Color = Colors.Black },
+        };
+        pill.SetResourceReference(Border.BorderBrushProperty, "LabelBorderBrush");
+
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Height = FanIconSize,
+            Cursor = Cursors.Hand,
+            Background = Brushes.Transparent, // hit-testable across the whole row
+        };
+        row.Children.Add(pill); // label to the LEFT of the icon
+        row.Children.Add(icon);
+        row.MouseLeftButtonUp += (_, _) =>
+        {
+            BeginCloseFan(); // retract while the pick launches
+            ShortcutService.Launch(launchPath);
+        };
+        if (draggable)
+            AttachFlyoutDrag(row, launchPath);
+        return row;
+    }
+
+    /// <summary>The theme's label colour (light/dark/auto via LabelBgBrush) made slightly
+    /// transparent. Resolved per fan open — entries are rebuilt each time — so theme switches stick.</summary>
+    private Brush TranslucentLabelBackground()
+    {
+        var color = TryFindResource("LabelBgBrush") is SolidColorBrush themed
+            ? themed.Color
+            : Color.FromRgb(0xF7, 0xF7, 0xFA);
+        var brush = new SolidColorBrush(Color.FromArgb(0xCC, color.R, color.G, color.B));
+        brush.Freeze();
+        return brush;
+    }
+
+    /// <summary>A fan item's shell icon (loaded async so the fan opens instantly).</summary>
+    private static UIElement BuildFanItemIcon(string path)
+    {
+        var image = new Image { Width = FanIconSize, Height = FanIconSize, Stretch = Stretch.Uniform };
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+        image.Effect = new DropShadowEffect { BlurRadius = 8, ShadowDepth = 2, Opacity = 0.35, Color = Colors.Black };
+        _ = LoadFanIconAsync(image, path, 96);
+        return image;
+    }
+
+    private static async Task LoadFanIconAsync(Image image, string path, int pixelSize)
+        => image.Source = await ShortcutService.LoadIconAsync(path, pixelSize);
+
+    /// <summary>The fan tail's disc: a semi-transparent circle with a shortcut arrow (↗), both
+    /// following the light/dark/auto theme (the label brushes, resolved per fan open).</summary>
+    private UIElement BuildFanTailIcon()
+    {
+        var disc = new Ellipse
+        {
+            Fill = TranslucentLabelBackground(),
+            StrokeThickness = 1,
+        };
+        disc.SetResourceReference(Ellipse.StrokeProperty, "LabelBorderBrush");
+
+        var arrow = new ShapePath
+        {
+            // An up-right arrow (shaft + open head), uniform-scaled into ~30% of the disc so it
+            // tracks FanIconSize.
+            Data = Geometry.Parse("M 0,12 L 12,0 M 3.5,0 H 12 V 8.5"),
+            Stretch = Stretch.Uniform,
+            Width = FanIconSize * 0.3,
+            Height = FanIconSize * 0.3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+        };
+        arrow.SetResourceReference(ShapePath.StrokeProperty, "LabelTextBrush");
+
+        var grid = new Grid { Width = FanIconSize, Height = FanIconSize };
+        grid.Children.Add(disc);
+        grid.Children.Add(arrow);
+        return grid;
+    }
+
+    /// <summary>"N more in File Explorer", or "Open in File Explorer" when everything fit the fan.</summary>
+    private static string FanTailLabel(int remaining)
+        => remaining > 0 ? string.Format(Loc.T("Fan_MoreInExplorer"), remaining) : Loc.T("Fan_OpenInExplorer");
+
+    // --- Folder grid ("View content as: Grid") ---------------------------------------------
+
+    private const double GridIconSize = 94;    // file icon size in the grid, per spec
+    private const double GridCellWidth = 132;
+    private const double GridCellHeight = 152; // icon + up to two label lines
+    private const int GridMaxColumns = 8;
+    private const int GridVisibleRows = 6;     // taller folders scroll
+
+    /// <summary>Opens the grid balloon: ALL of the folder's items (in its "Sort by" order) in a
+    /// rounded (24px), theme-tinted, vertically scrollable grid, plus an "Open in File Explorer"
+    /// tail cell. Columns scale square-ish with the item count (5 files + tail → 3×2), capped at 8.</summary>
+    private void ShowFolderGrid(DockItemViewModel item, PinnedPath pin, List<FileSystemInfo> entries)
+    {
+        if (ViewModel is null)
+            return;
+
+        FanCanvas.Children.Clear();
+
+        int total = entries.Count + 1; // + the "Open in File Explorer" cell
+        int cols = Math.Clamp((int)Math.Ceiling(Math.Sqrt(total)), 1, GridMaxColumns);
+        int rows = (int)Math.Ceiling(total / (double)cols);
+
+        var panel = new WrapPanel
+        {
+            Orientation = Orientation.Horizontal,
+            ItemWidth = GridCellWidth,
+            ItemHeight = GridCellHeight,
+            Width = cols * GridCellWidth,
+        };
+        foreach (var entry in entries)
+            panel.Children.Add(BuildGridCell(BuildGridItemIcon(entry.FullName), entry.Name, entry.FullName, draggable: true));
+        panel.Children.Add(BuildGridCell(BuildGridTailIcon(), Loc.T("Fan_OpenInExplorer"), pin.Path, draggable: false));
+
+        // At most 6 rows visible, and never taller than the screen space left above the dock.
+        double displayCap = SystemParameters.WorkArea.Height
+            - (ViewModel.WindowHeight - ViewModel.MagnifiedTop) - 72;
+        var scroll = new ScrollViewer
+        {
+            Content = panel,
+            VerticalScrollBarVisibility = rows > GridVisibleRows
+                ? ScrollBarVisibility.Auto
+                : ScrollBarVisibility.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = Math.Max(GridCellHeight, Math.Min(GridVisibleRows * GridCellHeight, displayCap)),
+        };
+
+        var tint = TranslucentLabelBackground();
+        var balloon = new Border
+        {
+            CornerRadius = new CornerRadius(24),
+            Background = tint,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(16),
+            Child = scroll,
+        };
+        balloon.SetResourceReference(Border.BorderBrushProperty, "LabelBorderBrush");
+
+        // Callout pointer: a small downward triangle at the balloon's bottom center, in the same
+        // tint, aiming at the folder tile.
+        var pointer = new ShapePath
+        {
+            Data = Geometry.Parse("M 0,0 H 28 L 14,13 Z"),
+            Fill = tint,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, -1, 0, 0), // tuck under the balloon so no seam shows
+        };
+
+        var root = new StackPanel();
+        root.Children.Add(balloon);
+        root.Children.Add(pointer);
+
+        root.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double width = root.DesiredSize.Width;
+        double height = root.DesiredSize.Height;
+
+        Canvas.SetLeft(root, 0);
+        Canvas.SetTop(root, 0);
+        FanCanvas.Children.Add(root);
+        FanCanvas.Width = width;
+        FanCanvas.Height = height;
+
+        // Pop in: scale out of the folder tile — anchored at the pointer's tip (bottom center),
+        // which sits directly over the tile — with a quick fade.
+        var scale = new ScaleTransform(0.15, 0.15);
+        root.RenderTransform = scale;
+        root.RenderTransformOrigin = new Point(0.5, 1.0);
+        root.Opacity = 0;
+        root.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
+        var grow = new DoubleAnimation(0.15, 1, TimeSpan.FromMilliseconds(220))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+        };
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+
+        // Centered over the tile, its bottom 20px above the top of a fully-magnified dock icon.
+        FanPopup.HorizontalOffset = item.X + item.RenderWidth / 2 - width / 2;
+        FanPopup.VerticalOffset = ViewModel.MagnifiedTop - 20 - height;
+        _fanIsGrid = true;
+        ShowFlyoutPopup(item);
+    }
+
+    /// <summary>One grid cell: the icon with the file name (extension included) centered beneath;
+    /// item cells (not the tail) can be dragged out onto the dock or into Explorer.</summary>
+    private FrameworkElement BuildGridCell(UIElement icon, string label, string launchPath, bool draggable)
+    {
+        var text = new TextBlock
+        {
+            Text = label,
+            FontSize = 12,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 34, // ~two lines, then ellipsis
+            Margin = new Thickness(4, 6, 4, 0),
+        };
+        text.SetResourceReference(TextBlock.ForegroundProperty, "LabelTextBrush");
+
+        var cell = new StackPanel { Cursor = Cursors.Hand, Background = Brushes.Transparent };
+        cell.Children.Add(icon);
+        cell.Children.Add(text);
+        cell.MouseLeftButtonUp += (_, _) =>
+        {
+            BeginCloseFan(); // fade the balloon while the pick launches
+            ShortcutService.Launch(launchPath);
+        };
+        if (draggable)
+            AttachFlyoutDrag(cell, launchPath);
+        return cell;
+    }
+
+    /// <summary>A grid item's shell icon (loaded async so the balloon opens instantly).</summary>
+    private static UIElement BuildGridItemIcon(string path)
+    {
+        var image = new Image
+        {
+            Width = GridIconSize,
+            Height = GridIconSize,
+            Stretch = Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.HighQuality);
+        _ = LoadFanIconAsync(image, path, 192); // 94 DIP stays crisp on HiDPI
+        return image;
+    }
+
+    // --- Folder list ("View content as: List") ---------------------------------------------
+
+    /// <summary>
+    /// "View content as: List": the folder opens as a context menu above its tile — every item as
+    /// a row (icon left, full file name right, never ellipsized; menus size to their content),
+    /// then a separator, Options ▶ (the folder's Sort by / Display as / View content as sections),
+    /// and Open in File Explorer.
+    /// </summary>
+    private async void OpenFolderListMenu(DockItemViewModel item, FrameworkElement? placementTarget)
+    {
+        if (item.PathModel is not { } pin)
+            return;
+
+        var entries = await Task.Run(() => FolderContents.GetSorted(pin.Path, pin.SortBy));
+
+        var menu = new ContextMenu();
+        foreach (var entry in entries)
+        {
+            var icon = new Image { Width = 20, Height = 20, Stretch = Stretch.Uniform };
+            RenderOptions.SetBitmapScalingMode(icon, BitmapScalingMode.HighQuality);
+            _ = LoadFanIconAsync(icon, entry.FullName, 48);
+
+            // A TextBlock header keeps underscores literal (a string Header treats "_" as an
+            // access-key marker and swallows it).
+            var row = new MenuItem { Header = new TextBlock { Text = entry.Name }, Icon = icon };
+            string path = entry.FullName;
+            row.Click += (_, _) => ShortcutService.Launch(path);
+            menu.Items.Add(row);
+        }
+
+        if (entries.Count > 0)
+            menu.Items.Add(new Separator());
+
+        var options = new MenuItem { Header = Loc.T("Menu_Options") };
+        AddFolderConfigSections(options, item, pin);
+        menu.Items.Add(options);
+
+        var open = new MenuItem { Header = Loc.T("Fan_OpenInExplorer") };
+        open.Click += (_, _) => ShortcutService.Launch(pin.Path);
+        menu.Items.Add(open);
+
+        menu.PlacementTarget = placementTarget ?? this;
+        menu.Placement = PlacementMode.Top;
+        menu.IsOpen = true;
+    }
+
+    /// <summary>The grid tail icon: a transparent circle with a 2px font-coloured ring and a
+    /// shortcut arrow in the center — clicking it opens the folder in File Explorer.</summary>
+    private FrameworkElement BuildGridTailIcon()
+    {
+        var disc = new Ellipse
+        {
+            Width = GridIconSize,
+            Height = GridIconSize,
+            Fill = Brushes.Transparent,
+            StrokeThickness = 2,
+        };
+        disc.SetResourceReference(Ellipse.StrokeProperty, "LabelTextBrush");
+
+        var arrow = new ShapePath
+        {
+            Data = Geometry.Parse("M 0,12 L 12,0 M 3.5,0 H 12 V 8.5"),
+            Stretch = Stretch.Uniform,
+            Width = GridIconSize * 0.3,
+            Height = GridIconSize * 0.3,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            StrokeThickness = 5,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+        };
+        arrow.SetResourceReference(ShapePath.StrokeProperty, "LabelTextBrush");
+
+        var grid = new Grid { Width = GridIconSize, Height = GridIconSize, HorizontalAlignment = HorizontalAlignment.Center };
+        grid.Children.Add(disc);
+        grid.Children.Add(arrow);
+        return grid;
     }
 
     // Open/pinned app menu: Options ▶ (Keep in Dock / Open at Login / Show in Explorer), then — for
@@ -2432,8 +3522,9 @@ public partial class DockWindow : Window
     }
 
     /// <summary>Shows the "Dockable Preferences" window, focusing it if already open (single instance).
-    /// An optional <paramref name="section"/> id (e.g. "About") navigates the window to that page.</summary>
-    private void OpenDockPreferences(string? section = null)
+    /// An optional <paramref name="section"/> id (e.g. "About") navigates the window to that page.
+    /// Internal so the menu bar's context menu can open it too.</summary>
+    internal void OpenDockPreferences(string? section = null)
     {
         if (ViewModel is null)
             return;
@@ -2537,7 +3628,9 @@ public partial class DockWindow : Window
         else
         {
             e.Effects = DragDropEffects.Copy;
-            ShowExternalDropGap(main); // part the tiles to preview where the icon would land
+            // Part the tiles to preview where the drop would land: folders/documents open the gap
+            // in the right section (the left side is reserved for executable-like shortcuts).
+            ShowExternalDropGap(main, ExternalDragTargetsPathSection(e));
         }
         e.Handled = true;
     }
@@ -2546,7 +3639,23 @@ public partial class DockWindow : Window
     private void OnDragLeave(object sender, DragEventArgs e)
     {
         ClearExternalDropGap();
+        _externalDragToPathSection = null; // re-classify the next drag session
         e.Handled = true;
+    }
+
+    /// <summary>Which section the current external drag previews into: the right (files/folders)
+    /// section unless every dragged item is executable-like. Classified once per drag session and
+    /// cached — DragOver fires continuously and reading the payload isn't free.</summary>
+    private bool ExternalDragTargetsPathSection(DragEventArgs e)
+    {
+        if (_externalDragToPathSection is { } cached)
+            return cached;
+        bool path = true; // default: folders/documents → the right section
+        if (_flyoutDragPath is null
+            && e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length > 0)
+            path = !paths.Any(p => IsAppLike(TaskbarApps.ResolveToTarget(p)));
+        _externalDragToPathSection = path;
+        return path;
     }
 
     // External files dragged from Explorer (internal reorder uses the custom mouse drag above).
@@ -2568,19 +3677,37 @@ public partial class DockWindow : Window
         }
 
         int index = ViewModel.ComputeDropIndex(main);
+        int pathIndex = ViewModel.ComputeDropPathIndex(main); // where the right-section gap previewed
         foreach (var path in paths)
-            // Pin a .lnk's destination, not the .lnk — but keep the shortcut's name (e.g. "Chrome.lnk" → "Chrome").
-            ViewModel.PinApp(TaskbarApps.ResolveToTarget(path), index++, System.IO.Path.GetFileNameWithoutExtension(path));
+        {
+            // An item dragged out of our own fan/grid always pins to the right section, as-is
+            // (even a launchable — it's a file from a folder, not an app shortcut).
+            if (_flyoutDragPath is not null)
+            {
+                ViewModel.PinPath(path, pathIndex++);
+                continue;
+            }
 
+            // Pin a .lnk's destination, not the .lnk — but keep the shortcut's name (e.g. "Chrome.lnk" → "Chrome").
+            string target = TaskbarApps.ResolveToTarget(path);
+            if (IsAppLike(target))
+                ViewModel.PinApp(target, index++, System.IO.Path.GetFileNameWithoutExtension(path));
+            else
+                // Folders and documents pin to the right section (macOS keeps them out of the app
+                // row), at the slot where the placeholder gap was showing.
+                ViewModel.PinPath(target, pathIndex++);
+        }
+
+        _externalDragToPathSection = null; // this drag session is over
         RefreshTaskbarApps();
     }
 
     // Opens / refreshes the placeholder gap and keeps the render loop running so the tiles part and
     // track the cursor; cleared on leave/drop so they glide back together.
-    private void ShowExternalDropGap(double main)
+    private void ShowExternalDropGap(double main, bool pathSection)
     {
         ClearWindowRegion(); // unclip so the widening bar and parted tiles render (and receive the drag)
-        ViewModel?.UpdateExternalDrop(main);
+        ViewModel?.UpdateExternalDrop(main, pathSection);
         HookRendering();
     }
 
@@ -2589,6 +3716,14 @@ public partial class DockWindow : Window
         ViewModel?.EndExternalDrop();
         HookRendering(); // run the loop so the parted tiles settle back
     }
+
+    /// <summary>Extensions that pin as launchable apps; any other dropped path (a folder or a
+    /// document) pins as a file/folder tile in the dock's right section instead.</summary>
+    private static readonly HashSet<string> AppExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { ".exe", ".com", ".bat", ".cmd", ".scr", ".msi", ".appref-ms", ".url" };
+
+    private static bool IsAppLike(string path)
+        => !Directory.Exists(path) && AppExtensions.Contains(Path.GetExtension(path));
 
     /// <summary>The cursor's main-axis (window) coordinate: X for a horizontal dock, Y for a vertical one.</summary>
     private double DropMain(Point p) => IsVerticalDock ? p.Y : p.X;
@@ -2732,6 +3867,8 @@ public partial class DockWindow : Window
         _thumbnails.Dispose();
         _foreground.Dispose();
         _acrylic.Dispose();
+        if (_shellHookMsg != 0 && _hwnd != IntPtr.Zero)
+            PInvoke.DeregisterShellHookWindow((HWND)_hwnd);
         _appBar?.Unregister(); // release reserved screen space
         Taskbar.Restore(); // restore the taskbar to its pre-launch state
         Loc.LanguageChanged -= OnLanguageChanged;

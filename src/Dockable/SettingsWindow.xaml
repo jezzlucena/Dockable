@@ -109,6 +109,29 @@
                             <Grid Grid.Row="1" VerticalAlignment="Center">
                                 <Border Height="4" CornerRadius="2" Background="#D6D6DA" VerticalAlignment="Center" />
                                 <Track x:Name="PART_Track">
+                                    <!-- Filled (left) side of the track: the same active blue as the
+                                         switches. The transparent right side keeps track clicks and
+                                         move-to-point working. -->
+                                    <Track.DecreaseRepeatButton>
+                                        <RepeatButton Command="Slider.DecreaseLarge" Focusable="False">
+                                            <RepeatButton.Template>
+                                                <ControlTemplate TargetType="RepeatButton">
+                                                    <Grid Background="Transparent" Height="22">
+                                                        <Border Height="4" CornerRadius="2,0,0,2" Background="#0A84FF" VerticalAlignment="Center" />
+                                                    </Grid>
+                                                </ControlTemplate>
+                                            </RepeatButton.Template>
+                                        </RepeatButton>
+                                    </Track.DecreaseRepeatButton>
+                                    <Track.IncreaseRepeatButton>
+                                        <RepeatButton Command="Slider.IncreaseLarge" Focusable="False">
+                                            <RepeatButton.Template>
+                                                <ControlTemplate TargetType="RepeatButton">
+                                                    <Grid Background="Transparent" Height="22" />
+                                                </ControlTemplate>
+                                            </RepeatButton.Template>
+                                        </RepeatButton>
+                                    </Track.IncreaseRepeatButton>
                                     <Track.Thumb>
                                         <Thumb>
                                             <Thumb.Template>
@@ -325,6 +348,30 @@
         <!-- Sidebar -->
         <Border Grid.Column="0" Background="#E4E4E4" BorderBrush="#D0D0D0" BorderThickness="0,0,1,0">
             <StackPanel Margin="10,16,10,10">
+                <!-- Search: filters the settings index (names + tags); results replace the nav list. -->
+                <Border Background="White" CornerRadius="7" BorderBrush="#D0D0D0" BorderThickness="1"
+                        Padding="8,0" Margin="0,0,0,10">
+                    <Grid Height="28">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="&#xE721;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   FontSize="12" Foreground="#8E8E93" VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <Grid Grid.Column="1">
+                            <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent"
+                                     VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F"
+                                     TextChanged="SearchBox_TextChanged" />
+                            <TextBlock x:Name="SearchHint" Text="{loc:Loc Search_Placeholder}" FontSize="13"
+                                       Foreground="#9A9AA0" VerticalAlignment="Center" IsHitTestVisible="False" />
+                        </Grid>
+                    </Grid>
+                </Border>
+
+                <!-- Search results (rows built in code); shown instead of the nav while searching. -->
+                <StackPanel x:Name="SearchResults" Visibility="Collapsed" />
+
+                <StackPanel x:Name="NavList">
                 <!-- General -->
                 <Border x:Name="NavGeneral" Style="{StaticResource NavRow}" Tag="General"
                         MouseLeftButtonUp="NavItem_Click">
@@ -341,7 +388,7 @@
                 <Border x:Name="NavDockMenuBar" Style="{StaticResource NavRow}" Tag="DockMenuBar"
                         MouseLeftButtonUp="NavItem_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Border Width="24" Height="24" CornerRadius="6" Background="#5E5CE6">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#0A84FF">
                             <TextBlock Text="&#xE8A9;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavDockMenuBarLabel" Text="{loc:Loc Nav_DockMenuBar}" Margin="10,0,0,0"
@@ -353,7 +400,17 @@
                 <Border x:Name="NavLiquidGlass" Style="{StaticResource NavRow}" Tag="LiquidGlass"
                         MouseLeftButtonUp="NavItem_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Border Width="24" Height="24" CornerRadius="6" Background="#32ADE6">
+                        <Border Width="24" Height="24" CornerRadius="6">
+                            <Border.Background>
+                                <!-- Liquid-glass sheen: pink core → red → blue → yellow rim, offset
+                                     off-center so it reads like light through glass. -->
+                                <RadialGradientBrush GradientOrigin="0.3,0.25" Center="0.5,0.5" RadiusX="0.95" RadiusY="0.95">
+                                    <GradientStop Color="#FF6FB1" Offset="0" />
+                                    <GradientStop Color="#FF3B30" Offset="0.35" />
+                                    <GradientStop Color="#0A84FF" Offset="0.72" />
+                                    <GradientStop Color="#FFD60A" Offset="1" />
+                                </RadialGradientBrush>
+                            </Border.Background>
                             <TextBlock Text="&#xE790;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavLiquidGlassLabel" Text="{loc:Loc Nav_LiquidGlass}" Margin="10,0,0,0"
@@ -365,13 +422,14 @@
                 <Border x:Name="NavAbout" Style="{StaticResource NavRow}" Tag="About"
                         MouseLeftButtonUp="NavItem_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Border Width="24" Height="24" CornerRadius="6" Background="#FF9500">
+                        <Border Width="24" Height="24" CornerRadius="6" Background="#1D1D1F">
                             <TextBlock Text="&#xE946;" Style="{StaticResource NavIcon}" />
                         </Border>
                         <TextBlock x:Name="NavAboutLabel" Text="{loc:Loc Nav_About}" Margin="10,0,0,0"
                                    VerticalAlignment="Center" FontSize="13" Foreground="#1D1D1F" />
                     </StackPanel>
                 </Border>
+                </StackPanel>
             </StackPanel>
         </Border>
 
@@ -396,6 +454,19 @@
                                 <ComboBox x:Name="LanguageCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
                                           VerticalAlignment="Center" SelectionChanged="LanguageCombo_SelectionChanged" />
                             </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" />
+
+                            <Grid Height="44">
+                                <TextBlock Text="{loc:Loc Row_Performance}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ComboBox x:Name="PerformanceCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
+                                          VerticalAlignment="Center" SelectionChanged="PerformanceCombo_SelectionChanged">
+                                    <ComboBoxItem Content="{loc:Loc Performance_Auto}" />
+                                    <ComboBoxItem Content="{loc:Loc Performance_Quality}" />
+                                    <ComboBoxItem Content="{loc:Loc Performance_Performance}" />
+                                </ComboBox>
+                            </Grid>
+
                             <Border Height="1" Background="#E3E3E3" Margin="0,0,0,0" />
                             <Grid Height="44">
                                 <TextBlock Text="{loc:Loc Row_OpenAtLogin}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
@@ -633,18 +704,6 @@
 
                             <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
 
-                            <Grid Height="44" Margin="16,0">
-                                <TextBlock Text="{loc:Loc Row_Performance}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
-                                <ComboBox x:Name="PerformanceCombo" Style="{StaticResource MacPopup}" HorizontalAlignment="Right"
-                                          VerticalAlignment="Center" SelectionChanged="PerformanceCombo_SelectionChanged">
-                                    <ComboBoxItem Content="{loc:Loc Performance_Auto}" />
-                                    <ComboBoxItem Content="{loc:Loc Performance_Quality}" />
-                                    <ComboBoxItem Content="{loc:Loc Performance_Performance}" />
-                                </ComboBox>
-                            </Grid>
-
-                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
-
                             <!-- Effect speed: the slider matches the Magnification slider's width (same *,24,* grid). -->
                             <Grid Margin="16,8,16,10">
                                 <Grid.ColumnDefinitions>
@@ -690,6 +749,14 @@
                                 <TextBlock Text="{loc:Loc Toggle_MinimizeIntoIcon}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
                                 <ToggleButton x:Name="MinimizeIntoIconSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
                                               VerticalAlignment="Center" Click="MinimizeIntoIconSwitch_Click" />
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_AutoHideDock}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="AutoHideDockSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              VerticalAlignment="Center" Click="AutoHideDockSwitch_Click" />
                             </Grid>
 
                         </StackPanel>
@@ -957,6 +1024,14 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
+                                <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_Stacks}" Style="{StaticResource BulletText}" />
+                            </Grid>
+                            <Grid Margin="0,4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE73E;" Style="{StaticResource BulletIcon}" />
                                 <TextBlock Grid.Column="1" Text="{loc:Loc About_Feat_MenuBar}" Style="{StaticResource BulletText}" />
                             </Grid>
                             <Grid Margin="0,4">
@@ -1037,6 +1112,17 @@
                                     <TextBlock Style="{StaticResource LinkGlyph}" />
                                 </StackPanel>
                             </Border>
+                            <!-- SVG rendering for pinned files, stacks, and fan/grid views. -->
+                            <Border Style="{StaticResource TechChip}" Tag="https://github.com/ElinamLLC/SharpVectors"
+                                    MouseLeftButtonUp="OpenLink_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Style="{StaticResource TechBadge}" Background="#8E44AD">
+                                        <TextBlock Style="{StaticResource TechBadgeText}" Text="SV" />
+                                    </Border>
+                                    <TextBlock Style="{StaticResource TechName}" Text="SharpVectors" />
+                                    <TextBlock Style="{StaticResource LinkGlyph}" />
+                                </StackPanel>
+                            </Border>
                         </WrapPanel>
                     </Border>
 
@@ -1049,12 +1135,22 @@
                                 FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
                                 Text="&#160;&#xE8A7;" /></Hyperlink>
                     </TextBlock>
-                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,4"
+                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,0"
                                FontSize="12" Foreground="#3A3A3C">
                         <Run Text="{loc:Loc About_CreatedBy}" /><Run Text=" " /><Hyperlink
                             NavigateUri="https://github.com/jezzlucena"
                             RequestNavigate="Hyperlink_RequestNavigate"
                             ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="Jezz Lucena" /><Run
+                                FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                                Text="&#160;&#xE8A7;" /></Hyperlink>
+                    </TextBlock>
+                    <!-- ✨ the web footer's vibe line, with credit where it's due. -->
+                    <TextBlock HorizontalAlignment="Center" TextAlignment="Center" Margin="0,6,0,4"
+                               FontSize="12" Foreground="#3A3A3C" FontStyle="Italic">
+                        <Run Text="&#x2728;" FontStyle="Normal" /><Run Text=" " /><Hyperlink
+                            NavigateUri="https://claude.com/claude-code"
+                            RequestNavigate="Hyperlink_RequestNavigate"
+                            ToolTip="{loc:Loc About_OpensInBrowser}"><Run Text="{loc:Loc About_VibeCoded}" /><Run
                                 FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
                                 Text="&#160;&#xE8A7;" /></Hyperlink>
                     </TextBlock>

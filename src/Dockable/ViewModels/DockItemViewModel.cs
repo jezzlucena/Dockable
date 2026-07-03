@@ -30,6 +30,18 @@ public sealed partial class DockItemViewModel : ObservableObject
     public bool IsMinimizedWindow => Model.Kind == DockItemKind.MinimizedWindow;
     public bool IsTaskbarApp => Model.Kind == DockItemKind.TaskbarApp;
     public bool IsRecycleBin => Model.Kind == DockItemKind.RecycleBin;
+    public bool IsPinnedFolder => Model.Kind == DockItemKind.PinnedFolder;
+    public bool IsPinnedFile => Model.Kind == DockItemKind.PinnedFile;
+
+    /// <summary>True for a pinned file or folder tile (the dock's macOS-style right section).</summary>
+    public bool IsPinnedPath => IsPinnedFolder || IsPinnedFile;
+
+    /// <summary>The persisted pin behind a <see cref="IsPinnedPath"/> tile (path + folder options).</summary>
+    public PinnedPath? PathModel { get; set; }
+
+    /// <summary>The folder's last-write time when its stack icon was last composed; the periodic
+    /// refresh recomposes the stack when this drifts (direct children added/removed/renamed).</summary>
+    public DateTime PathStamp { get; set; }
 
     /// <summary>Whether this taskbar app is pinned in the dock (vs. only running).</summary>
     [ObservableProperty]
@@ -42,7 +54,8 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// <summary>True for items that show an icon/thumbnail (and a loading fallback).</summary>
     public bool ShowIconArea =>
         Model.Kind is DockItemKind.Shortcut or DockItemKind.MinimizedWindow
-            or DockItemKind.TaskbarApp or DockItemKind.RecycleBin;
+            or DockItemKind.TaskbarApp or DockItemKind.RecycleBin
+            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile;
 
     /// <summary>Native window handle for <see cref="DockItemKind.MinimizedWindow"/> tiles.</summary>
     public IntPtr Hwnd { get; set; }
@@ -126,8 +139,19 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// <summary>UTC ticks the current bounce started; 0 when not bouncing.</summary>
     private long _bounceStartTicks;
 
-    /// <summary>Current upward bounce offset in DIPs (0 at rest); applied on top of the layout Y.</summary>
+    /// <summary>How many hops the current bounce plays (1 = launch, 3 = attention request).</summary>
+    private int _bounceHops = 1;
+
+    /// <summary>Current bounce lift in DIPs (0 at rest); the engine maps it into <see cref="BounceX"/>/
+    /// <see cref="BounceY"/> per edge so ONLY the icon lifts (the running dot stays put).</summary>
     public double BounceOffset { get; private set; }
+
+    /// <summary>True while a bounce is playing (used to not restart mid-flight on repeat flashes).</summary>
+    public bool IsBouncing => _bounceStartTicks != 0;
+
+    // Render-transform offsets for the icon image during a bounce (bound by the item template).
+    [ObservableProperty] private double _bounceX;
+    [ObservableProperty] private double _bounceY;
 
     /// <summary>True if <paramref name="hwnd"/> was already present at the last refresh.</summary>
     public bool HasWindow(IntPtr hwnd) => _knownWindows.Contains(hwnd);
@@ -140,13 +164,18 @@ public sealed partial class DockItemViewModel : ObservableObject
             _knownWindows.Add(h);
     }
 
-    /// <summary>Starts (or restarts) the launch bounce from the top.</summary>
-    public void StartBounce() => _bounceStartTicks = DateTime.UtcNow.Ticks;
+    /// <summary>Starts (or restarts) a bounce: one hop for an app launch, more for an attention
+    /// request (the taskbar-flash equivalent).</summary>
+    public void StartBounce(int hops = 1)
+    {
+        _bounceHops = Math.Max(1, hops);
+        _bounceStartTicks = DateTime.UtcNow.Ticks;
+    }
 
     /// <summary>
     /// Advances the bounce, setting <see cref="BounceOffset"/> for the current time. The icon hops
-    /// up and back down <c>Hops</c> times; <paramref name="amplitude"/> is the peak lift in DIPs.
-    /// Returns true while still bouncing.
+    /// up and back down the requested number of times; <paramref name="amplitude"/> is the peak
+    /// lift in DIPs. Returns true while still bouncing.
     /// </summary>
     public bool UpdateBounce(double amplitude)
     {
@@ -154,9 +183,8 @@ public sealed partial class DockItemViewModel : ObservableObject
             return false;
 
         const double hopMs = 560; // one up-and-down hop (2x slower than the original 280ms)
-        const int hops = 3;
         double elapsed = (DateTime.UtcNow.Ticks - _bounceStartTicks) / (double)TimeSpan.TicksPerMillisecond;
-        if (elapsed >= hopMs * hops)
+        if (elapsed >= hopMs * _bounceHops)
         {
             _bounceStartTicks = 0;
             BounceOffset = 0;
@@ -186,6 +214,11 @@ public sealed partial class DockItemViewModel : ObservableObject
             case DockItemKind.RecycleBin:
                 RecycleBin.Open();
                 break;
+            case DockItemKind.PinnedFolder:
+            case DockItemKind.PinnedFile:
+                // Shell-launch the path: folders open in File Explorer, files in their default app.
+                ShortcutService.Launch(Model.TargetPath);
+                break;
         }
     }
 
@@ -200,8 +233,21 @@ public sealed partial class DockItemViewModel : ObservableObject
             return;
         }
 
-        if (Model.Kind is not (DockItemKind.Shortcut or DockItemKind.TaskbarApp))
+        if (Model.Kind is not (DockItemKind.Shortcut or DockItemKind.TaskbarApp
+            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile))
             return;
+
+        // A folder displayed as a Stack composes its top items' icons instead of the folder glyph;
+        // an empty/unreadable folder falls back to the plain File Explorer folder icon below.
+        if (Model.Kind == DockItemKind.PinnedFolder && PathModel is { DisplayAs: FolderDisplayAs.Stack } pin)
+        {
+            var stacked = await StackIcon.RenderAsync(Model.TargetPath, pin.SortBy, pixelSize);
+            if (stacked is not null)
+            {
+                Icon = stacked;
+                return;
+            }
+        }
 
         if (!string.IsNullOrWhiteSpace(Model.TargetPath))
             Icon = await ShortcutService.LoadIconAsync(Model.TargetPath, pixelSize);

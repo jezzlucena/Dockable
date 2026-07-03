@@ -34,6 +34,15 @@ Code session here — read it first; it captures everything not obvious from the
   errors). **For Debug builds it's fine to kill the app yourself first** (standing permission from the
   user) so the copy step doesn't fail — just run the stop command before building.
   Stop command: `Get-Process Dockable -ErrorAction SilentlyContinue | Stop-Process -Force`.
+  **After a successful Debug build, RESTART the app — but only if it was actually running before
+  you killed it** (don't launch a dock the user didn't have open). Capture the state before the
+  kill and relaunch detached after the build:
+  ```powershell
+  $wasRunning = [bool](Get-Process Dockable -ErrorAction SilentlyContinue)
+  Get-Process Dockable -ErrorAction SilentlyContinue | Stop-Process -Force
+  & "C:\Program Files\dotnet\dotnet.exe" build "src\Dockable\Dockable.csproj" -c Debug
+  if ($wasRunning) { Start-Process "src\Dockable\bin\Debug\net9.0-windows10.0.22621.0\Dockable.exe" }
+  ```
   Only one dock runs (single-instance Mutex). Force-killing is safe: a hidden `powershell.exe`
   **taskbar watchdog** (`Interop/TaskbarWatchdog`, spawned at startup) notices the kill, restores the
   taskbar's pre-launch state, and exits on its own — killing `Dockable` by name doesn't touch it
@@ -111,6 +120,11 @@ overloads, namespaces), build once with the files emitted and read them:
 - `H.NotifyIcon.Wpf` 2.3.0 — tray icon. **Quirk:** its `IconSource` only accepts URI-backed images;
   use `GeneratedIconSource` (a `BitmapSource` subclass) for an in-process glyph.
 - `Microsoft.Windows.CsWin32` 0.3.183 — source-generated interop (PrivateAssets=all).
+- `SharpVectors.Wpf` 1.8.5 — SVG → WPF drawing. Used by `Shell/SvgIcon` to render real icons for
+  .svg/.svgz files (the shell has no SVG thumbnailer — it returns the generic association icon);
+  hooked into `ShortcutService.LoadIcon`'s single funnel, so pinned SVG files, stack members, and
+  fan rows all show the artwork. Rasterized square/centered at the requested size on the loader's
+  worker thread (visual + RenderTargetBitmap created and frozen on that same thread).
 
 ---
 
@@ -128,17 +142,21 @@ src/Dockable/
                          taskbar native auto-hide control, theme application (ApplyTheme/SetTheme),
                          and About/Preferences window launch.
   SettingsWindow.xaml(.cs) "Dock Preferences" window (separator right-click or tray). Light,
-                         macOS-style. Sections: System (Language + Open-at-login), Appearance
-                         (Light/Dark/Auto tiles), Dock (Size/Magnification, Position, Glass Effect,
-                         Minimize effect, Effect Speed, toggles), Taskbar. Most rows are wired live
-                         (Position only implements Bottom).
+                         macOS-style. Sections: System (Language + Performance + Open-at-login),
+                         Appearance (Light/Dark/Auto tiles), Dock (Size/Magnification, Position,
+                         Glass Effect, Minimize effect, Effect Speed, toggles incl. Auto-hide),
+                         Taskbar. Most rows are wired live (Position only implements Bottom).
+                         **Settings search**: a sidebar search box filters `SettingsIndex` (entries =
+                         panel tag + Loc name key + a row-resolver + English synonym tags; names match
+                         in the UI language, tags in English); results replace the nav list; clicking
+                         navigates + scrolls to and PULSES the row (accent tint fading back — whole
+                         panels navigate with no pulse). Rows are found by walking up from the named
+                         control (`RowOf`); new settings should be added to the index.
   MenuBarWindow.xaml(.cs) Optional macOS-style menu bar: a thin top AppBar (primary monitor) showing the
                          focused window's title, a clickable keyboard-layout switcher, Quick-Settings
                          (Win+A) + Notifications (Win+N) buttons, and a clock. Its own AppBarManager
                          (WM_USER+2) + AcrylicBackdrop + ApplyTheme; no magnification/clipping (window ==
                          bar). Owned by App (created/closed per Settings.ShowMenuBar). See feature area below.
-  AboutWindow.xaml(.cs)  "About Dockable": icon, version (reflection), localized stack/inspiration
-                         blurb, and a GitHub hyperlink crediting Jezz Lucena.
   ConfirmDialog.cs       Code-built Yes/No prompt with optional "Do not ask again".
   InputDialog.cs         Code-built single-line text prompt (OK/Cancel) — e.g. Rename.
   AppIcon.cs             The app's own icon loaded once (Large 256px / Tray 32px) for windows + tray.
@@ -147,21 +165,26 @@ src/Dockable/
   app.manifest           Per-monitor-v2 DPI awareness; asInvoker.
   NativeMethods.txt      CsWin32 API list.
 
+  Themes/
+    ModernMenu.xaml      Windows 11-style context-menu styles (implicit, app-wide; merged in App.xaml).
   Localization/
     LocData.cs           Per-language string tables (en, pt-BR, es, uk, zh-Hans) + the picker list.
     Loc.cs               Runtime service: indexer + T(key); SetLanguage (live) raises Item[]/event;
                          Initialize resolves saved-or-OS culture → English fallback.
     LocExtension.cs      {loc:Loc Key=…} XAML markup extension → binds to Loc.Instance[Key].
   Models/
-    DockItemKind.cs      enum: StartMenu, Shortcut, Separator, MinimizedWindow, TaskbarApp.
+    DockItemKind.cs      enum: StartMenu, Shortcut, Separator, MinimizedWindow, TaskbarApp,
+                         RecycleBin, PinnedFolder, PinnedFile.
     DockItem.cs          Persisted/transient item shape + factory methods.
     DockSettings.cs      Root settings + DockEdge/GlassEffect/DockTheme/MinimizeEffect enums
                          (see Settings schema below).
+    PinnedPath.cs        A pinned file/folder + its FolderSortBy/FolderDisplayAs/FolderViewContentAs.
   ViewModels/
     MenuBarViewModel.cs  Menu bar state: shared DockSettings (theme/glass) + live Title/KeyboardLabel/TimeText.
     DockViewModel.cs     Owns Items (ObservableCollection), Settings, geometry props; composes
-                         sections (Start + apps + separator + minimized) and reconciles in place;
-                         taskbar-app refresh + matching; dock-owned pin mutations.
+                         sections (Start + apps + separator + minimized + pinned files/folders +
+                         Recycle Bin) and reconciles in place; taskbar-app refresh + matching;
+                         dock-owned pin + pinned-path mutations.
     DockItemViewModel.cs Per-item: Icon, X/Y/RenderSize/CurrentScale (layout), IsRunning, IsPinned,
                          IsDragging, Hwnd, AppKey, LaunchPath, Windows.
     DockLayoutEngine.cs  Fisheye magnification + live drag layout + window/bar geometry.
@@ -169,7 +192,11 @@ src/Dockable/
     SettingsStore.cs     Atomic JSON load/save of DockSettings (%APPDATA%\Dockable\settings.json).
   Shell/
     ShortcutService.cs   Launch(path) via shell; RevealInExplorer; LoadIconAsync
-                         (IShellItemImageFactory → 256px, alpha-correct, off UI thread, E_PENDING retry).
+                         (IShellItemImageFactory → 256px, alpha-correct, off UI thread, E_PENDING retry;
+                         pixels read via GetDIBits with an explicit top-down target — see Known decisions).
+    FolderContents.cs    A pinned folder's sorted top-level listing (+ shell "Kind" names via SHGetFileInfo).
+    StackIcon.cs         Composites a folder's top items into the Stack tile bitmap.
+    SvgIcon.cs           Renders .svg/.svgz to icons via SharpVectors (hooked into LoadIconAsync).
   Interop/
     StartMenu.cs         Open Start via synthesized Win keypress (SendInput).
     QuickSettings.cs     Open the OS Quick Settings flyout (network/sound) via synthesized Win+A.
@@ -219,6 +246,7 @@ src/Dockable/
     StartupManager.cs    HKCU Run-key "run at login" entries (IsEnabled/Enable/Disable).
     RecycleBin.cs        IsEmpty / Empty (with OS prompt) / SendToRecycleBin (SHFileOperation
                          FO_DELETE + FOF_ALLOWUNDO); state-aware empty/full icon via the shell.
+    KnownFolders.cs      SHGetKnownFolderPath (the Downloads seed — the folder can be relocated).
     AcrylicBackdrop.cs   Separate non-layered click-through backdrop window hosting a
                          Windows.UI.Composition acrylic blur, clipped to the bar's rounded rect.
     ShaderCompiler.cs    Compiles HLSL → ps bytecode at runtime via d3dcompiler_47 (no fxc).
@@ -288,14 +316,17 @@ src/Dockable/
 | `MagnificationEnabled` | true | Fisheye magnification on/off. |
 | `TaskbarVisibility` | `Never` | `TaskbarVisibility`: Always (visible) / Auto (native auto-hide, reveal on hover) / Never (fully hidden — default; the dock replaces the taskbar). Pre-launch state restored on exit/crash/kill (watchdog). |
 | `ShowMenuBar` | true | Show the macOS-style top menu bar (reserves a strip at the top of the primary monitor). |
+| `AutoHideDock` | false | "Automatically hide and show the Dock" (Preferences + the dock menu's "Turn Hiding On/Off"). Implemented: the dock slides off its edge when idle (`HideProgress` DP animates, `PositionDock` applies the offset), reveals when the cursor presses a 2px edge sliver (`_autoHideTimer` 120 ms watcher; "activity" = hover, drags, flyout, any menu via `Mouse.Captured`, in-flight warps), and the **AppBar strip stays UNRESERVED the whole time it's on** (`ReserveAppBarSpace` unregisters and bails). |
 | `ShowRunningIndicators` | true | Show the running-dot under apps with open windows. |
-| `AnimateOpeningApps` | true | Bounce an app's icon when it gains a new window. |
+| `AnimateOpeningApps` | true | Bounce an app's icon when it gains a new window (ONE hop; the bounce is an icon-only RenderTransform — `BounceX/Y` set by the engine per edge — so the running dot stays put). Also gates the **attention bounce**: 3 hops when a window flashes its taskbar button (shell hook: `RegisterShellHookWindow` → `HSHELL_FLASH` 0x8006 in WndProc; repeat flashes don't restart a playing bounce). |
 | `MinimizeIntoIcon` | false | Minimize into the app's dock icon instead of a separate tile. |
 | `Items` | [] | Legacy (old drag-drop pins); unused. |
 | `PinnedApps` | null | Dock-owned ordered pin list (launch paths). null = seed from taskbar once. |
 | `AskReplicateTaskbarPins` | true | Prompt to replicate newly-pinned taskbar shortcuts onto the dock. |
 | `AskAddToStartup` | true | Prompt (once) to add Dockable to Windows startup. |
 | `SeededPreferencesPin` | false | Whether the built-in Dock Preferences pin was seeded once (so removal sticks). |
+| `SeededDownloadsPin` | false | Whether the default ~/Downloads folder pin was seeded once (so removal sticks). |
+| `PinnedPaths` | [] | Files/folders pinned to the right section (`PinnedPath`: path + per-folder SortBy/DisplayAs/ViewContentAs). |
 | `KnownTaskbarPins` | null | Taskbar pins already seen/offered, so only new ones prompt. |
 | `PinNames` | null | Friendly display names captured per pinned launch path. |
 
@@ -371,11 +402,31 @@ src/Dockable/
   unless Dockable is elevated; a minimized app shows both a running dot AND a genie tile.
 
 ### Docking behavior + multi-monitor/DPI
-- The dock is **always visible**: `ApplyBehavior` always registers an AppBar (`AppBarManager`) to
-  reserve a strip at the configured `Edge` and positions the dock there (there is **no** AutoHide
-  slide mode / `Behavior` setting anymore — the *Windows taskbar's* native auto-hide is the only
-  hide mechanism). `PositionDock` centers on the monitor; when the taskbar is hidden the dock anchors
-  to the **full monitor bottom** (not the work-area bottom).
+- **Default: always visible** — `ApplyBehavior` registers an AppBar (`AppBarManager`) to reserve a
+  strip at the configured `Edge` and positions the dock there. `PositionDock` centers on the
+  monitor; when the taskbar is hidden the dock anchors to the **full monitor bottom** (not the
+  work-area bottom).
+- **Auto-hide (`AutoHideDock`, off by default)** — the macOS-style hide/reveal returned (it was
+  removed once; don't trust older notes): when on, the dock slides off-screen along its edge after
+  ~600 ms of no interaction and slides back when the cursor presses a **2-physical-px sliver** at
+  that screen edge. Mechanics: `HideProgress` DP (0→1) animated by `SlideDock`, applied as an
+  offset inside `PositionDock`; `_autoHideTimer` (120 ms) is both the idle watcher (activity =
+  hover, drags, flyouts, ANY menu via `Mouse.Captured`, in-flight warps) and the edge watcher
+  (GetCursorPos-based, so it works mid-OLE-drag). **The AppBar strip stays unreserved the whole
+  time auto-hide is on** — even while revealed (`ReserveAppBarSpace` unregisters and bails); the
+  dock overlays maximized windows like macOS. Toggled from Preferences or the dock menu's "Turn
+  Hiding On/Off" → both call `DockWindow.ApplyAutoHide()` (internal).
+- **The window's main-axis size GLIDES, never steps** (`DockLayoutEngine._alongWindowTarget` →
+  eased `_alongWindow` per frame; the drag-gap width `_gapExtent` eases too): stepping the size on
+  tile add/remove desynced the Win32 resize from the content for a frame — the whole dock jittered.
+  `_restingBlockMain` follows the EASED size, which keeps `RestingCenterOf` warp aims exact (for a
+  monitor-centered dock the easing and centering offsets cancel in screen space). `ApplyWindowSize`
+  runs per frame during the glide, so it re-reserves the AppBar **only when the cross-axis size
+  changed** (`_lastReservedCross`) — else maximized windows would reflow every frame. Related:
+  `Recompute()` must NEVER reset `CurrentScale`s or step with a forced no-hover — it runs mid-hover
+  (departed tile finalizing, 1 s refresh), and doing so blinked the magnification off/on under the
+  cursor (width jitter). Its nominal step reuses the engine's last-seen cursor state
+  (`_lastMouseMain`/`_lastHovering`).
 - **AppBar reserves exactly the resting (un-magnified) dock**, not the taller window that holds
   magnified/overflowing icons. `ReserveAppBarSpace` reserves from the docked edge to the bar's **far**
   edge (`WindowHeight - BarTop` for Bottom, i.e. including the bar's small margin from the screen edge —
@@ -469,6 +520,10 @@ src/Dockable/
   fresh WPF+3D window per minimize cost 10s–100s ms and was the visible "blink". It maps the capture
   onto an animated `MeshGeometry3D` grid (Viewport3D + orthographic camera) warping into the dock;
   `reverse:true` for restore. Only one genie at a time (shared overlay).
+- **The genie's neck width is the SETTLED tile width** (`TileWidthOf`): a just-added tile is still
+  growing its slot in (AppearScale ≈ 0), so its live RenderWidth reads ~2 DIP at play time — trust
+  it and the warp necks to a dot. TileWidthOf divides RenderWidth by AppearScale mid-grow to
+  project the final width (Suck still pinches to a point by design).
 - Orchestration in `DockWindow` (`InterceptedMinimize`/`MinimizeOneAnimated`/`MinimizeToDock` for
   minimize; `OnWindowMinimizing` reactive fallback; `RestoreMinimized`/`RestoreWindowAnimated` for
   restore); `_busy` set guards re-entrancy. Rough edges: minimizes that fall through to the reactive
@@ -537,6 +592,18 @@ src/Dockable/
   nothing rendered (Chrome/Edge/Office/UWP command-bar apps). Known limits: owner-drawn Win32 items
   render blank in a hosted popup (WM_DRAWITEM can't cross processes); elevated apps are UIPI-blocked;
   very long menus can overlap the trailing status cluster on narrow screens.
+- **Right-click on empty bar space** shows the same dock-wide menu as the dock's empty space
+  (Task Manager / Preferences / About / Quit) — `Bar_RightClick`, reaching the dock via
+  `Application.Current.Windows.OfType<DockWindow>()` (`OpenDockPreferences` is internal for this).
+- **Active-item pill highlight:** every interactive menu-bar item sits in a "pill" `Border` (fixed
+  22px height, CornerRadius 11 = fully round; 8px padding offset by negative margins so the layout
+  matches the padless positions exactly). `MenuHighlightBrush` (swapped in `ApplyTheme`: light
+  `#17000000` almost-transparent black, dark `#26FFFFFF` almost-transparent white) is painted while
+  an item is active: held open for menus we control (logo menu, keyboard layouts —
+  `HighlightWhileOpen` clears on `ContextMenu.Closed`; Tier-1 app menus stay lit through the modal
+  `TrackPopupMenuEx`), a ~350 ms `FlashPill` for actions whose flyout can't be tracked (OS flyouts,
+  the cross-process title-bar menu, UIA menus). The Windows-logo pill is `StartPill` INSIDE the
+  full-height `StartButton` hit area (edge-to-edge click target from the previous change).
 - **Full-screen hide:** like the dock, the menu bar hides itself + its backdrop while a full-screen or
   borderless-fullscreen app (game/video) owns its monitor (`Interop/Fullscreen` test, re-checked on
   foreground change, the 1 s clock tick, and `ABN_FULLSCREENAPP`); it reappears when that window goes away.
@@ -553,6 +620,114 @@ src/Dockable/
   the reliable, update-proof **Quick Settings + Notifications** flyout shortcuts above. (Probe scripts were
   one-off; not kept in the repo.) Caveat: the OS anchors those flyouts to the bottom-right tray — they
   can't be repositioned under the menu-bar icons.
+
+### Pinned files & folders (macOS right-section stacks) — Grid/List TODO
+- **Files and folders pin to the dock's right section** (after the apps separator; the section
+  orders minimized thumbnails FIRST, then the pinned files/folders, then the Recycle Bin).
+  They can't live among the app shortcuts. Persisted as `DockSettings.PinnedPaths`
+  (`Models/PinnedPath`: path + per-folder `SortBy`/`DisplayAs`/`ViewContentAs` enums, macOS defaults
+  Date Added / Stack / Automatic); kinds `DockItemKind.PinnedFolder` / `PinnedFile`
+  (folder-ness = `Directory.Exists` at VM creation).
+- **Pinning**: an Explorer drop routes by type (`DockWindow.IsAppLike`): directories + documents →
+  `PinPath` (inserted at the previewed right-section slot); launchable extensions
+  (.exe/.com/.bat/.cmd/.scr/.msi/.appref-ms/.url) → the existing `PinApp` app-pin path. The
+  **drop-preview gap is section-aware**: `ExternalDragTargetsPathSection` classifies the payload
+  once per drag (cached — DragOver fires continuously; any app-like item → left/apps gap, else
+  right/paths gap), threaded through `UpdateExternalDrop(main, pathSection)` to the engine, and
+  `ComputeDropPathIndex` makes the drop land exactly where the gap showed. Remove via context menu →
+  `UnpinPath` (tile shrinks out through the shared `_departing` machinery). **Path tiles are full
+  drag candidates**: reorder within the right section (the engine's drag gap goes path-aware —
+  `PathsBeforeCursor`/`PathGapSlot`, `DragInsertIndex` then means an index into `PinnedPaths` and
+  `MovePinnedPath` commits), hold-steady "Remove" + drop-on-Recycle-Bin unpin (removes the PIN, not
+  the file). **Fan/grid rows drag out as real files** (`AttachFlyoutDrag`: OS `DoDragDrop` with
+  FileDrop): dropping on the dock pins to the right section as-is (`_flyoutDragPath` flags the
+  in-process drag so OnDrop skips the app-vs-path routing), Explorer copies, the dock's bin
+  recycles; tail cells don't drag; the flyout retracts automatically (the OS drag steals the
+  light-dismiss capture). **Flyouts follow their tile** (`_fanAnchorFollow`: PropertyChanged on the
+  tile's X/RenderWidth re-anchors `FanPopup.HorizontalOffset` as magnification drifts icons); the
+  grid balloon has a **bottom-center callout triangle** in its tint aiming at the tile. GOTCHA:
+  `OnMouseMove` must `ClearWindowRegion()` (flag-guarded) — while a flyout holds capture, the dock
+  never gets MouseEnter, so the idle clip couldn't be cleared and magnified icons rendered cut off
+  at the bar top.
+- **Click opens via shell** (`DockItemViewModel.Activate`): folders in File Explorer, files with
+  their default app.
+- **Context menus** (`BuildFolderMenu`/`BuildFileMenu`): folders get macOS's full menu — gray
+  section headers (disabled `MenuItem`s) with single-select check-marked choices for **Sort by**
+  (Name/Date Added/Date Modified/Date Created/Kind), **Display as** (Folder/Stack), **View content
+  as** (Fan/Grid/List/Automatic), then Options ▶ (Remove from Dock / **"Show in File Explorer"** —
+  user-specified wording, key `Menu_ShowInFileExplorer`, distinct from the app menu's
+  `Menu_ShowInExplorer`) and `Open "Name"` (`Menu_OpenNamed`, a `string.Format` template). Files get
+  just Options ▶ + Open.
+- **Stack tile** (`Display as: Stack`, the default): `Shell/StackIcon.RenderAsync` composes the
+  folder's top-10 items' icons into one `RenderTargetBitmap` — a bottom-anchored cascade, top-of-sort
+  item in front, each behind it peeking ~6px (of 256) higher (front icon ≈80% of the tile, near
+  dock-icon size). Ordering comes from
+  `Shell/FolderContents.GetSorted` (files+subfolders, hidden/system skipped): Name = culture-aware
+  alphabetical on the display name; **Date Added ≈ creation time** (NTFS has no true macOS
+  "date added"; copies re-stamp creation, same-volume moves don't) newest-first; Date Modified /
+  Created newest-first; **Kind** = the shell's friendly type name (`SHGetFileInfo` SHGFI_TYPENAME,
+  CsWin32) alphabetically, then name within each kind. The stack recomposes on Sort by / Display as
+  menu picks and when the folder's **mtime** drifts (cheap probe on the 1 s refresh — catches direct
+  child add/remove/rename, NOT a child's content edit, so a Date Modified stack can go stale).
+  `.svg`/`.svgz` items render their actual artwork via `Shell/SvgIcon` (SharpVectors) instead of the
+  shell's generic icon.
+- **Fan** (`View content as: Fan`): clicking the folder opens `FanPopup` (its own hwnd — immune to
+  the dock's idle `SetWindowRgn` clip; `StaysOpen=False` dismisses on outside click) instead of
+  Explorer; built/animated in code (`OpenFolderFan`). Slot 0 = bottom = top of the stack; entries
+  rise from the tile bottom-up with an 18 ms stagger + subtle rightward arc, **always fading in as
+  they start** (the 160 ms fade finishes while the 280 ms rise still travels). Each row (icon + label together) is
+  **progressively rotated** — 0° at the bottom up to the arc's own tangent
+  (`atan(2·FanArcPerSlot·k / FanSpacing)`) at the top, pivoting on the icon center; the rise
+  translation applies after the rotation so entries travel straight up. Labels sit to the **LEFT of
+  the icons** — rows are right-anchored on the icon column (all rows measured up front; the widest
+  label sets the canvas extent + popup offset so icons stay on the arc), rotation pivots on the icon
+  at the row's right end, and `FanTopPad` gives headroom for rotated labels swinging up. Labels show
+  the **real file name with extension** (folders have none) in a **fully-rounded pill** (fixed
+  `FanPillHeight` 26, radius = half) whose background is the theme's `LabelBgBrush` colour at ~80%
+  alpha (resolved per open, so theme switches stick). Tail entry = a semi-transparent
+  theme-following disc (`LabelBgBrush` @ ~80% fill, `LabelBorderBrush` ring, `LabelTextBrush` ↗) +
+  "N more in File Explorer" (`Fan_MoreInExplorer`; `Fan_OpenInExplorer` when everything fit),
+  which opens the folder. Click an entry → shell-launch + retract. **Dismissal is animated**
+  (`BeginCloseFan`): the opening mirrored — entries sink back into the tile top-rows-first
+  (ease-in, from their CURRENT offset so an interrupted opening reverses mid-flight) and **always
+  fade out at the end**, vanishing as they land; the popup only really closes (`IsOpen=false`) on a
+  timer after the longest retraction. To make that possible light-dismiss is **manual**: `StaysOpen=True` + a
+  `CaptureMode.SubTree` mouse capture on `FanCanvas` (taken at Input priority after open); any
+  outside mouse-down hits `OnFanOutsideClick` → retract, and a stolen capture
+  (`OnFanLostCapture` — dock drag, other popup, Alt-Tab) retracts too. `BeginCloseFan` releases the
+  capture immediately (retraction is purely visual); `_fanClosing` guards re-entry and is reset in
+  `OnFanClosed`. Side effect of the capture: dock hover/magnification doesn't react while a fan is
+  open (accepted).
+- **Grid** (`View content as: Grid`): same flyout popup/dismissal machinery (`_fanIsGrid` flags the
+  mode) but the content is a **balloon** — `Border` CornerRadius 24, theme-tinted translucent bg,
+  holding a `ScrollViewer`+`WrapPanel` of **ALL** items (not top-10) in sort order, 94px icons with
+  the name (extension incl., ≤2 lines + ellipsis) beneath, plus an "Open in File Explorer" tail cell
+  (transparent circle, 2px `LabelTextBrush` ring, ↗). Columns = `ceil(sqrt(n))` capped at 8 (5 files
+  + tail → 3×2); ≥7 rows scroll (6 visible max, also capped to the space above the dock). Opens by
+  **scaling out of the folder tile** (ScaleTransform 0.15→1, origin bottom-center + quick fade) and
+  closes with the mirror shrink. NOTE: `ShortcutService.ConvertHBitmap` reads pixels via
+  **GetDIBits with an explicit top-down target** — never infer row order from the source DIB's
+  biHeight sign (some shell paths mislabel it; PNG/ICO thumbnails + folder icons came out upside
+  down). The scrollbar drag steals the subtree capture — `OnFanLostCapture`
+  ignores capture moving to a `FanCanvas` descendant and `OnFanPreviewMouseUp` retakes it on
+  release (otherwise dragging the scrollbar would dismiss the balloon).
+- **Automatic** (`View content as`, the default): fan for ≤9 items, grid for 10+ —
+  `OpenFolderFlyout` enumerates once then dispatches to `ShowFolderFan`/`ShowFolderGrid`. **List**
+  (`OpenFolderListMenu`): the folder opens as a plain `ContextMenu` above the tile — one row per
+  item (20px icon + full name; a `TextBlock` header so "_" stays literal instead of becoming an
+  access key), then Separator / Options ▶ (the shared `AddFolderConfigSections`: Sort by,
+  Display as, View content as — same sections as the right-click menu, minus its Options + Open) /
+  Open in File Explorer. WPF auto-scrolls menus taller than the screen. The user's **Downloads folder is seeded as a pin on first run**
+  with Sort by **Date Added** + View content as **Fan** (Display as keeps the Stack default);
+  `SeededDownloadsPin` flag makes removal stick; resolved via `Interop/KnownFolders` →
+  `SHGetKnownFolderPath(FOLDERID_Downloads)` since Downloads can be relocated. While the fan is open the folder's
+  tile swaps to the **open-stack indicator** (a cached rendered bitmap: semi-transparent rounded
+  square + dark downward chevron, `FanOpenTileIcon`), with the real icon stashed/restored on close
+  (`_fanPrevIcon` — a stack recompose landing mid-fan would be stomped by the restore; rare,
+  accepted). The toggle-click guard matters:
+  StaysOpen=False closes the popup on the tile click's mouse-DOWN, so the mouse-UP checks
+  `_fanLastClosed`/400 ms to not instantly reopen. Grid / List / Automatic still open Explorer —
+  **user will direct those next**; fan math is Bottom-edge-only (like hover labels).
 
 ### Taskbar visibility + restore safety
 - **Three states** (`DockSettings.TaskbarVisibility`, default **Never**), set from Dock Preferences →
@@ -583,6 +758,22 @@ src/Dockable/
 
 ## Known decisions
 
+- **All context menus are Win11-styled via `Themes/ModernMenu.xaml`** (merged in App.xaml —
+  implicit ContextMenu/MenuItem/Separator styles restyle every code-built menu app-wide: dock,
+  tray, menu bar, folder List view). Rounded 8px surface with an outer Margin for the drop shadow
+  (needs the popup's transparency — `HasDropShadow=True`), one MenuItem template for both
+  ContextMenu roles (check glyph and the Icon share the leading column; chevron + popup only for
+  SubmenuHeader), scroll arrows via the `MenuScrollViewer` ComponentResourceKey. The `PopupMenu*`
+  brushes are swapped at **Application scope** from `DockWindow.ApplyTheme` (near-opaque tint —
+  real acrylic isn't possible on WPF popups; a deliberate approximation). The two cross-process
+  menus (Tier-1 hosted HMENU app menus, the title-bar system menu) can't be styled and stay native.
+- **The dock's empty-space / separator menu** (`BuildSeparatorMenu`) is macOS's Dock menu: Task
+  Manager | sep | Turn Hiding On/Off (`AutoHideDock`), Turn Magnification On/Off (re-enabling bumps
+  a stale `MaxIconSize` to 2× so "on" is never a no-op), Position on Screen ▶ Left/Bottom/Right
+  (checkmarked), Minimize Using ▶ Genie/Suck/Scale (checkmarked) | sep | Preferences, About | sep |
+  Quit. Picks sync an open Preferences window via `SettingsWindow.SyncFromSettings()`. The menu
+  bar's empty-space right-click shows the four-item variant (Task Manager/Prefs/About/Quit).
+
 - **Bar styling follows a Light/Dark theme** (`DockSettings.Theme` = `System`/`Light`/`Dark`,
   default System; **"System" is shown to the user as "Auto"**). Two pickers: the tray "Theme"
   submenu (Light/Dark/Auto) and the settings window's **Appearance** section (Light/Dark/Auto
@@ -598,7 +789,11 @@ src/Dockable/
   - **Dark** (`.macos-dock-dark`): bg `#66242424`, border `#14FFFFFF`, shadow opacity `0.4`;
     light dependents (separator `#40FFFFFF`, running-dot `#CCFFFFFF` = rgba(255,255,255,0.8),
     fallback `#33FFFFFF`/white).
-  - Running-dot (`.app-indicator`) is a 4px circle.
+  - Running-dot (`.app-indicator`) is a 4px circle. It does NOT hop with the launch/attention
+    bounce — the bounce is an icon-only RenderTransform (`BounceX/Y`), the container stays put.
+  - Separator lines stop **`DockLayoutEngine.SeparatorEndInset` (9 DIP) short of each bar edge**,
+    computed in the engine (orientation-agnostic — top/bottom on a horizontal dock, left/right on a
+    vertical one). No XAML margins; tune the one constant.
   - **System** mode reads `Interop/SystemTheme.IsLight()` (registry `AppsUseLightTheme`) and
     re-applies on OS theme change via `WM_SETTINGCHANGE`/`ImmersiveColorSet` in `WndProc`.
   - The **settings window stays light** regardless (it models the light macOS Settings screenshot).
@@ -655,6 +850,17 @@ Phases 1–3 + polish implemented:
   toggles), Taskbar — wired live (Position only implements the Bottom edge).
 - **Docking**: always-visible AppBar that reserves only the resting bar; the window is clipped to the
   bar when idle so magnification can bleed over. **Native taskbar auto-hide** (self-restoring).
+- **Pinned files & folders** (macOS right section): drop to pin, dock-owned order, per-folder
+  Sort by / Display as (Stack composite icons) / View content as (**Fan** with reverse retraction,
+  **Grid** balloon, **List** menu, **Automatic** by count); drag out of fan/grid onto the dock;
+  real **SVG icon rendering** (SharpVectors); Downloads seeded on first run.
+- **Auto-hide the dock** (`AutoHideDock`): slide off the edge when idle, reveal on a 2px edge
+  sliver, AppBar reservation released throughout.
+- **Launch/attention bounce**: one hop on open, 3 hops on a taskbar attention flash (shell hook);
+  icon-only transform so the running dot stays put.
+- **Windows 11-style context menus** app-wide (`Themes/ModernMenu.xaml`), theme-aware; macOS-style
+  Dock menu on empty space (Task Manager, hiding/magnification toggles, position + minimize-effect
+  pickers); menu-bar item pill highlights + edge-to-edge logo click target.
 - **Single instance** (Mutex); tray icon; settings persisted to `%APPDATA%\Dockable\settings.json`.
 
 Likely next work / open TODOs: implement the non-Bottom **Position on screen** edges; exact

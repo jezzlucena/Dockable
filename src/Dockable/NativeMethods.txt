@@ -206,3 +206,22 @@ EXTENDED_NAME_FORMAT
 // --- Menu bar: battery level + charge state indicator ---
 GetSystemPowerStatus
 SYSTEM_POWER_STATUS
+
+// --- Pinned folders: the shell's friendly type name ("Application", "JSON Source File") for the
+//     stack/fan "Kind" sort ---
+SHGetFileInfo
+SHFILEINFOW
+
+// --- Icon conversion: read GetImage's DIB rows in an EXPLICIT top-down order (some shell paths
+//     mislabel the row order, flipping PNG/ICO thumbnails and folder icons upside down) ---
+GetDIBits
+DIB_USAGE
+
+// --- Seed the default ~/Downloads pin (the folder can be relocated; resolve it properly) ---
+SHGetKnownFolderPath
+FOLDERID_Downloads
+
+// --- Attention bounce: shell-hook messages tell us when an app flashes its taskbar button ---
+RegisterShellHookWindow
+DeregisterShellHookWindow
+RegisterWindowMessage

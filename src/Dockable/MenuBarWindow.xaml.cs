@@ -262,15 +262,31 @@ public partial class MenuBarWindow : Window
         if (target == IntPtr.Zero || !PInvoke.IsWindow((HWND)target))
             return;
 
+        var pill = element as Border;
         if (entry.Source == AppMenuSource.Win32)
         {
-            var labelOrigin = element.PointToScreen(new Point(0, 0));
-            var barBottom = PointToScreen(new Point(0, ActualHeight)); // screen px, DPI-scaled
-            Win32AppMenu.Show(target, entry.Index,
-                (int)Math.Round(labelOrigin.X), (int)Math.Round(barBottom.Y), _hwnd);
+            // TrackPopupMenuEx is modal (it pumps its own loop), so the pill stays lit for exactly
+            // as long as the hosted dropdown is up.
+            if (pill is not null)
+                SetPillActive(pill, true);
+            try
+            {
+                var labelOrigin = element.PointToScreen(new Point(0, 0));
+                var barBottom = PointToScreen(new Point(0, ActualHeight)); // screen px, DPI-scaled
+                Win32AppMenu.Show(target, entry.Index,
+                    (int)Math.Round(labelOrigin.X), (int)Math.Round(barBottom.Y), _hwnd);
+            }
+            finally
+            {
+                if (pill is not null)
+                    SetPillActive(pill, false);
+            }
         }
         else
         {
+            // The UIA path expands the app's OWN menu (we can't track its close) → brief flash.
+            if (pill is not null)
+                FlashPill(pill);
             // Activate first (from the UI thread, while we're foreground and allowed to hand it off)
             // so the app's menu tracks/dismisses correctly, then expand off-thread — UIA can stall.
             PInvoke.SetForegroundWindow((HWND)target);
@@ -317,6 +333,8 @@ public partial class MenuBarWindow : Window
     // Opens the Windows "Power & battery" settings page.
     private void Battery_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
+        if (sender is Border batteryPill)
+            FlashPill(batteryPill);
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:batterysaver")
@@ -349,6 +367,7 @@ public partial class MenuBarWindow : Window
         var menu = BuildWindowsMenu();
         menu.PlacementTarget = StartButton;
         menu.Placement = PlacementMode.Bottom;
+        HighlightWhileOpen(StartPill, menu);
         menu.IsOpen = true;
     }
 
@@ -359,6 +378,7 @@ public partial class MenuBarWindow : Window
         AddItem(menu, Loc.T("Menu_AboutThisPC"), () => ShortcutService.Launch("ms-settings:about"));
         menu.Items.Add(new Separator());
         AddItem(menu, Loc.T("Menu_SystemSettings"), () => ShortcutService.Launch("ms-settings:"));
+        AddItem(menu, Loc.T("Menu_TaskManager"), () => ShortcutService.Launch("taskmgr.exe"));
         AddItem(menu, Loc.T("Menu_MicrosoftStore"), () => ShortcutService.Launch("ms-windows-store://home"));
         menu.Items.Add(new Separator());
 
@@ -400,6 +420,25 @@ public partial class MenuBarWindow : Window
         item.Click += (_, _) => onClick();
         menu.Items.Add(item);
     }
+
+    // Right-click on the bar's empty space: the same dock-wide menu as the dock's empty space
+    // (Task Manager / Preferences / About / Quit).
+    private void Bar_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        var menu = new ContextMenu();
+        AddItem(menu, Loc.T("Menu_TaskManager"), () => ShortcutService.Launch("taskmgr.exe"));
+        menu.Items.Add(new Separator());
+        AddItem(menu, Loc.T("Menu_DockPreferences"), () => FindDock()?.OpenDockPreferences());
+        AddItem(menu, Loc.T("Menu_AboutDockable"), () => FindDock()?.OpenDockPreferences("About"));
+        menu.Items.Add(new Separator());
+        AddItem(menu, Loc.T("Menu_QuitDockable"), () => Application.Current.Shutdown());
+        menu.Placement = PlacementMode.MousePoint;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private static DockWindow? FindDock()
+        => Application.Current.Windows.OfType<DockWindow>().FirstOrDefault();
 
     // Builds the "Recent Apps" submenu: one entry per open app (windows grouped by executable/AUMID),
     // each raising all of that app's windows when chosen.
@@ -464,6 +503,7 @@ public partial class MenuBarWindow : Window
     // honours custom title-bar menus (e.g. Chrome's) since it's the same message a real click sends.
     private void AppName_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
+        FlashPill(AppNamePill); // the title-bar menu is cross-process; its close isn't trackable
         if (_appHwnd == IntPtr.Zero)
             return;
         var target = (HWND)_appHwnd;
@@ -487,17 +527,31 @@ public partial class MenuBarWindow : Window
     // TrayOverflow.Open synthesizes Win+B then (after a short delay) Enter — run it off the UI thread so
     // the in-between sleep doesn't block the bar.
     private void TrayOverflow_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        => System.Threading.Tasks.Task.Run(TrayOverflow.Open);
+    {
+        if (sender is Border trayPill)
+            FlashPill(trayPill);
+        System.Threading.Tasks.Task.Run(TrayOverflow.Open);
+    }
 
     private void QuickSettings_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        => QuickSettings.Open();
+    {
+        if (sender is Border quickPill)
+            FlashPill(quickPill);
+        QuickSettings.Open();
+    }
 
     private void Notifications_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
-        => Notifications.Open();
+    {
+        if (sender is Border notifyPill)
+            FlashPill(notifyPill);
+        Notifications.Open();
+    }
 
     // Opens the Windows "Date & time" settings page (Settings > Time & language > Date & time).
     private void Clock_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
+        if (sender is Border clockPill)
+            FlashPill(clockPill);
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:dateandtime")
@@ -534,6 +588,8 @@ public partial class MenuBarWindow : Window
         }
         menu.PlacementTarget = KeyboardText;
         menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        if (sender is Border pill)
+            HighlightWhileOpen(pill, menu);
         menu.IsOpen = true;
     }
 
@@ -558,12 +614,46 @@ public partial class MenuBarWindow : Window
         {
             Resources["BarBackgroundBrush"] = Brush("#80242424"); // dock dark bg (#242424) @ 50%
             Resources["MenuTextBrush"] = Brush("#FFF2F2F2");
+            Resources["MenuHighlightBrush"] = Brush("#26FFFFFF"); // active pill: almost-transparent white
         }
         else
         {
             Resources["BarBackgroundBrush"] = Brush("#80FFFFFF"); // dock light bg (#FFFFFF) @ 50%
             Resources["MenuTextBrush"] = Brush("#FF1D1D1F");
+            Resources["MenuHighlightBrush"] = Brush("#17000000"); // active pill: almost-transparent black
         }
+    }
+
+    // --- Active-item pill highlight -------------------------------------------------------
+
+    /// <summary>Paints / clears the fully-rounded highlight behind a menu-bar item's pill.</summary>
+    private void SetPillActive(Border pill, bool active)
+    {
+        if (active)
+            pill.SetResourceReference(Border.BackgroundProperty, "MenuHighlightBrush");
+        else
+            pill.Background = System.Windows.Media.Brushes.Transparent;
+    }
+
+    /// <summary>Keeps a pill highlighted for as long as its menu stays open.</summary>
+    private void HighlightWhileOpen(Border pill, ContextMenu menu)
+    {
+        SetPillActive(pill, true);
+        menu.Closed += (_, _) => SetPillActive(pill, false);
+    }
+
+    /// <summary>Brief press feedback for actions whose flyout we can't track (the OS flyouts, the
+    /// cross-process title-bar menu) — the pill lights up for a moment.</summary>
+    private void FlashPill(Border pill)
+    {
+        SetPillActive(pill, true);
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            SetPillActive(pill, false);
+        };
+        timer.Start();
     }
 
     private static SolidColorBrush Brush(string hex)

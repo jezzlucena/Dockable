@@ -22,4 +22,10 @@ public enum DockItemKind
 
     /// <summary>The Windows Recycle Bin; pinned far-right, with a state-aware empty/full icon.</summary>
     RecycleBin,
+
+    /// <summary>A folder pinned to the dock's right section (macOS folder/stack); click opens it.</summary>
+    PinnedFolder,
+
+    /// <summary>A file pinned to the dock's right section; click opens it with its default app.</summary>
+    PinnedFile,
 }
