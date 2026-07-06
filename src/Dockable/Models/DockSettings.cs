@@ -161,6 +161,13 @@ public sealed class DockSettings
     /// </summary>
     public bool AutoHideDock { get; set; }
 
+    /// <summary>
+    /// Hide the dock (and menu bar) entirely — window hidden, not rendered — while a full-screen or
+    /// borderless-fullscreen app/game owns their monitor. On by default; when off they stay visible
+    /// over full-screen content.
+    /// </summary>
+    public bool HideOnFullscreen { get; set; } = true;
+
     /// <summary>Show the running-indicator dot under apps that have open windows.</summary>
     public bool ShowRunningIndicators { get; set; } = true;
 

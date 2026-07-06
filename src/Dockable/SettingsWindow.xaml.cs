@@ -93,6 +93,7 @@ public partial class SettingsWindow : Window
         AnimateOpeningSwitch.IsChecked = s.AnimateOpeningApps;
         MinimizeIntoIconSwitch.IsChecked = s.MinimizeIntoIcon;
         AutoHideDockSwitch.IsChecked = s.AutoHideDock;
+        HideOnFullscreenSwitch.IsChecked = s.HideOnFullscreen;
         ShowMenuBarSwitch.IsChecked = s.ShowMenuBar;
         TaskbarCombo.SelectedIndex = (int)s.TaskbarVisibility; // Always, Auto, Never (matches combo order)
 
@@ -104,7 +105,7 @@ public partial class SettingsWindow : Window
         ShowSection("General");        // default page + sidebar selection
         UpdateGlassParamsEnabled();    // grey the tuning sliders unless Liquid Glass is selected
 
-        // The default size (740x560) may exceed a small display — shrink to fit the work area.
+        // The default size (740x685) may exceed a small display — shrink to fit the work area.
         var work = SystemParameters.WorkArea;
         if (Width > work.Width) Width = work.Width;
         if (Height > work.Height) Height = work.Height;
@@ -151,6 +152,7 @@ public partial class SettingsWindow : Window
         new("DockMenuBar", "Toggle_AnimateOpening", () => RowOf(AnimateOpeningSwitch), "animate opening applications bounce launch attention hop"),
         new("DockMenuBar", "Toggle_MinimizeIntoIcon", () => RowOf(MinimizeIntoIconSwitch), "minimize into application icon tile thumbnail"),
         new("DockMenuBar", "Toggle_AutoHideDock", () => RowOf(AutoHideDockSwitch), "automatically hide show dock autohide auto-hide hiding reveal slide"),
+        new("DockMenuBar", "Toggle_HideOnFullscreen", () => RowOf(HideOnFullscreenSwitch), "hide fullscreen full screen full-screen apps games video borderless immersive"),
         new("DockMenuBar", "Toggle_ShowMenuBar", () => RowOf(ShowMenuBarSwitch), "menu bar top bar clock keyboard battery notifications quick settings"),
         new("DockMenuBar", "Row_ShowTaskbar", () => RowOf(TaskbarCombo), "windows taskbar show hide always auto never"),
 
@@ -572,6 +574,16 @@ public partial class SettingsWindow : Window
         _vm.Save();
         // The dock owns the behavior (slide out/in + releasing the AppBar reservation).
         Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.ApplyAutoHide();
+    }
+
+    private void HideOnFullscreenSwitch_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.Settings.HideOnFullscreen = HideOnFullscreenSwitch.IsChecked == true;
+        _vm.Save();
+        // Turning it off restores a dock/menu bar currently hidden for a full-screen app; turning it
+        // on takes effect on the next fullscreen check (nothing is fullscreen while we're focused).
+        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.ApplyHideOnFullscreen();
+        Application.Current.Windows.OfType<MenuBarWindow>().FirstOrDefault()?.ApplyHideOnFullscreen();
     }
 
     // Always / Auto (native auto-hide) / Never. The dock applies and persists it (and restores the

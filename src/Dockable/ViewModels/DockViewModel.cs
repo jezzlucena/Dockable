@@ -143,7 +143,33 @@ public sealed partial class DockViewModel : ObservableObject
         OnPropertyChanged(nameof(SeparatorVAlign));
     }
 
-    public void RecomputeLayout() => _layout.Recompute();
+    public void RecomputeLayout()
+    {
+        // The window's main-axis size (and appear scales) glide toward their targets per frame —
+        // if the recompute leaves a glide pending, the render loop must run to finish it, even when
+        // nothing else (hover, bounce, drag) would hook it.
+        if (_layout.Recompute())
+            AnimationRequested?.Invoke();
+    }
+
+    /// <summary>Snaps the window straight to its full (max-magnified) size — no glide. Used once at
+    /// startup after the initial population, so the dock never appears clipped at the sides.</summary>
+    public void SnapWindowSize() => _layout.SnapWindowSize();
+
+    /// <summary>Cursor hover footprint along the main axis (DIP), centered in the window: the extent
+    /// a fully-magnified bar (incl. a drag gap) can cover. The window itself spans the whole monitor
+    /// edge, so DockWindow's geometric hover test uses this instead of the window size. Set by the
+    /// layout engine on every recompute; read per render frame (code only, no binding).</summary>
+    public double HoverExtentMain { get; set; }
+
+    /// <summary>Pins the window's main-axis size to the monitor's full edge (DIP) — the window then
+    /// never resizes as tiles come and go (they animate in canvas coordinates, atomically with the
+    /// render). Re-lays-out when the extent actually changes (monitor/DPI/edge switch).</summary>
+    public void SetFixedMainExtent(double extent)
+    {
+        if (_layout.SetFixedMainExtent(extent))
+            RecomputeLayout();
+    }
 
     /// <summary><paramref name="mouseMain"/> is the cursor's main-axis coordinate (window X for a
     /// horizontal dock, window Y for a vertical one).</summary>
@@ -640,12 +666,16 @@ public sealed partial class DockViewModel : ObservableObject
 
     /// <summary>The label for a pinned launch path: the remembered name if any, else derived from the path.</summary>
     public string PinDisplayName(string launchPath)
+        => RecordedPinName(launchPath) ?? DerivePinName(launchPath);
+
+    /// <summary>The remembered friendly name for a launch path, if one was captured (null otherwise).</summary>
+    private string? RecordedPinName(string launchPath)
     {
         if (Settings.PinNames is { } names)
             foreach (var kv in names)
                 if (string.Equals(kv.Key, launchPath, StringComparison.OrdinalIgnoreCase))
                     return kv.Value;
-        return DerivePinName(launchPath);
+        return null;
     }
 
     /// <summary>Best-effort name from a launch path alone: an AppsFolder app's shell name, else the file
@@ -809,6 +839,44 @@ public sealed partial class DockViewModel : ObservableObject
     /// <summary>The taskbar-app tile (pinned or running) whose window list contains <paramref name="hwnd"/>.</summary>
     public DockItemViewModel? FindAppForWindow(IntPtr hwnd)
         => _appVms.FirstOrDefault(a => a.Windows.Contains(hwnd));
+
+    /// <summary>
+    /// The friendly app name for a window, via the same funnel that names the dock's tiles — so the
+    /// menu bar and the dock never disagree. Tile-first: a represented window returns its tile's
+    /// label (which benefits from the identity cache's AUMID retries and remembered pin names).
+    /// Unrepresented windows (e.g. brand-new, between refreshes) derive the way tiles do: packaged
+    /// AUMID → AppsFolder shell name; else the exe's remembered pin name, version-info description,
+    /// or extension-less file stem — never a raw file name with ".exe"; else the window title.
+    /// </summary>
+    public string AppDisplayNameForWindow(IntPtr hwnd)
+    {
+        if (FindAppForWindow(hwnd) is { } tile && !string.IsNullOrWhiteSpace(tile.DisplayName))
+            return tile.DisplayName;
+
+        string aumid = TaskbarApps.GetWindowAumid(hwnd);
+        if (TaskbarApps.IsPackagedAumid(aumid))
+            return AumidDisplayName(aumid, TaskbarApps.GetWindowTitle(hwnd));
+
+        string exe = TaskbarApps.GetWindowExePath(hwnd);
+        if (!string.IsNullOrEmpty(exe))
+        {
+            if (RecordedPinName(exe) is { } recorded)
+                return recorded;
+            try
+            {
+                string? desc = System.Diagnostics.FileVersionInfo.GetVersionInfo(exe).FileDescription?.Trim();
+                if (!string.IsNullOrEmpty(desc))
+                    return desc;
+            }
+            catch
+            {
+                // No version info / unreadable — fall through to the stem.
+            }
+            return SafeName(exe);
+        }
+
+        return TaskbarApps.GetWindowTitle(hwnd); // elevated apps whose exe we can't read
+    }
 
     // --- Item composition / reconciliation ----------------------------------------------
 

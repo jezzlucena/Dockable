@@ -49,9 +49,12 @@ public sealed class MinimizeInterceptHook : IDisposable
 
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
+    private const int VK_SHIFT = 0x10;
     private const int VK_DOWN = 0x28;
     private const int VK_M = 0x4D;
     private const int VK_D = 0x44;
+    private const int VK_S = 0x53;
+    private const int VK_SNAPSHOT = 0x2C;
 
     private readonly HOOKPROC _mouseProc;    // held to keep the delegates alive for the hooks
     private readonly HOOKPROC _keyboardProc;
@@ -64,6 +67,7 @@ public sealed class MinimizeInterceptHook : IDisposable
     private bool _winDownArmed;
     private bool _winMArmed;
     private bool _winDArmed;
+    private bool _snipArmed;
 
     // The window whose minimize-button press we swallowed; the release decides whether to minimize it.
     private IntPtr _armedMinimize;
@@ -77,6 +81,12 @@ public sealed class MinimizeInterceptHook : IDisposable
     /// <summary>Fires when the user pressed Win+D (show desktop) — a toggle: minimize every window if
     /// any is open, otherwise restore the ones we minimized. The subscriber decides the direction.</summary>
     public event Action? ShowDesktopRequested;
+
+    /// <summary>Fires when the user triggers an OS screen capture — Win+Shift+S or PrintScreen (which
+    /// opens the Snipping overlay on Win11 by default). Observe-only: the keystroke is NEVER swallowed;
+    /// this only gives the dock a head start to lift its capture exclusion before the overlay grabs
+    /// the screen.</summary>
+    public event Action? ScreenSnipRequested;
 
     public MinimizeInterceptHook()
     {
@@ -229,6 +239,16 @@ public sealed class MinimizeInterceptHook : IDisposable
                     return new LRESULT(1); // handled Win+D (show desktop) ourselves
                 }
             }
+            else if (data.vkCode == VK_S || data.vkCode == VK_SNAPSHOT)
+            {
+                if (up) _snipArmed = false;
+                else if (down && !_snipArmed
+                    && (data.vkCode == VK_SNAPSHOT || (WinHeld() && ShiftHeld())))
+                {
+                    _snipArmed = true;
+                    ScreenSnipRequested?.Invoke(); // observe-only — fall through, never swallow
+                }
+            }
         }
         return PInvoke.CallNextHookEx((HHOOK)default, code, wParam, lParam);
     }
@@ -236,6 +256,9 @@ public sealed class MinimizeInterceptHook : IDisposable
     private static bool WinHeld()
         => (PInvoke.GetAsyncKeyState(VK_LWIN) & 0x8000) != 0
         || (PInvoke.GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+
+    private static bool ShiftHeld()
+        => (PInvoke.GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
     /// <summary>
     /// Win+Down: if the foreground window is a normal app window, claim the minimize (returns true so we

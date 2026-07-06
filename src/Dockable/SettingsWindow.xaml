@@ -8,7 +8,7 @@
         ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         Width="740"
-        Height="560"
+        Height="685"
         MinWidth="620"
         MinHeight="440"
         Background="#EDEDED"
@@ -777,6 +777,15 @@
                                 <ToggleButton x:Name="AutoHideDockSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
                                               AutomationProperties.Name="{loc:Loc Toggle_AutoHideDock}"
                                               VerticalAlignment="Center" Click="AutoHideDockSwitch_Click" />
+                            </Grid>
+
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_HideOnFullscreen}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="HideOnFullscreenSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              AutomationProperties.Name="{loc:Loc Toggle_HideOnFullscreen}"
+                                              VerticalAlignment="Center" Click="HideOnFullscreenSwitch_Click" />
                             </Grid>
 
                         </StackPanel>

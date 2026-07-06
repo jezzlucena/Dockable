@@ -175,6 +175,7 @@ public partial class DockWindow : Window
         {
             RefreshTaskbarApps();
             UpdateFullscreenState(); // backstop in case a fullscreen transition didn't raise an event
+            CheckCaptureFriendlyExit(); // re-exclude the dock from capture once the Snipping Tool is gone
             CheckAndPromptNewPins(); // reliable poll for new taskbar pins (the folder watcher often doesn't fire on Win11)
         };
 
@@ -380,6 +381,10 @@ public partial class DockWindow : Window
         _minimizeIntercept.MinimizeRequested += hwnd => Dispatcher.BeginInvoke(() => InterceptedMinimize(hwnd));
         _minimizeIntercept.MinimizeAllRequested += () => Dispatcher.BeginInvoke(OnMinimizeAllRequested);
         _minimizeIntercept.ShowDesktopRequested += () => Dispatcher.BeginInvoke(OnShowDesktopRequested);
+        // Win+Shift+S / PrintScreen: lift the glass capture exclusion BEFORE the snip overlay grabs the
+        // screen, so the dock shows up in the user's capture. Send priority — this must win that race.
+        _minimizeIntercept.ScreenSnipRequested +=
+            () => Dispatcher.BeginInvoke(EnterCaptureFriendlyMode, DispatcherPriority.Send);
         _minimizeIntercept.Start();
 
         _foreground.ForegroundChanged += OnForegroundChanged;
@@ -428,6 +433,12 @@ public partial class DockWindow : Window
     {
         RefreshTaskbarApps();
         SyncPreMinimizedWindows(); // adopt windows already minimized before the dock launched
+        // The initial layout snapped with just the Start tile; the population above widened the
+        // window TARGET, which normally glides there over frames. Snap now, before first paint, so
+        // the dock appears at its full (max-magnified) width instead of clipped at the sides — and
+        // re-sync the backdrop so the glass capture rect spans that full width from the start.
+        ViewModel?.SnapWindowSize();
+        SyncAcrylic();
         _appRefreshTimer.Start(); // pick up apps opening/closing
 
         try
@@ -589,6 +600,10 @@ public partial class DockWindow : Window
 
     private void OnForegroundChanged()
     {
+        // Snipping app took focus (launched from Start, or its editor/recording UI) — make the dock
+        // capturable. Runs before the fullscreen check so its overlay guard is already armed.
+        if (IsForegroundSnipApp())
+            EnterCaptureFriendlyMode();
         UpdateFullscreenState();
         if (StartMenu.IsOpen())
             RaiseDockAboveStartMenu(); // Start menu just came forward — keep the dock above it
@@ -617,7 +632,27 @@ public partial class DockWindow : Window
         if (Fullscreen.IsForegroundOwnProcess(_ownProcessId))
             return;
 
-        bool fullscreen = Fullscreen.IsForegroundFullscreenOnMonitorOf(_hwnd, _ownProcessId);
+        // The Snipping Tool's region-select overlay covers the whole monitor — don't let it trigger
+        // the fullscreen hide while the user is trying to capture the dock.
+        if (_captureFriendly && IsForegroundSnipApp())
+            return;
+
+        bool fullscreen = (ViewModel?.Settings.HideOnFullscreen ?? true)
+            && Fullscreen.IsForegroundFullscreenOnMonitorOf(_hwnd, _ownProcessId);
+        SetFullscreenHidden(fullscreen);
+    }
+
+    /// <summary>Applies a HideOnFullscreen setting change now: turning it off restores a dock that's
+    /// currently hidden for a full-screen app (bypassing the own-process foreground guard — the click
+    /// came from our Preferences window). Turning it on takes effect on the next fullscreen check.</summary>
+    internal void ApplyHideOnFullscreen()
+    {
+        if (ViewModel is { Settings.HideOnFullscreen: false })
+            SetFullscreenHidden(false);
+    }
+
+    private void SetFullscreenHidden(bool fullscreen)
+    {
         if (fullscreen == _fullscreenActive)
             return;
         _fullscreenActive = fullscreen;
@@ -667,6 +702,18 @@ public partial class DockWindow : Window
     /// <summary>Anchors the dock flush to its monitor's docked edge, centered along the other axis.</summary>
     private void PositionDock()
     {
+        // Pin the window's main-axis size to the full monitor edge (a fixed strip): resizing the
+        // window as tiles grow in/out desynced the native resize+recenter from the layered bitmap
+        // for a frame each step — the whole dock jittered. With the strip pinned, only monitor/DPI/
+        // edge changes ever resize the window. (Re-entry note: a changed extent recomputes layout →
+        // ApplyWindowSize → PositionDock again; the second pass sees no change and falls through.)
+        if (_hwnd != IntPtr.Zero && ViewModel is not null)
+        {
+            var info = Monitors.ForWindow(_hwnd);
+            double extent = (IsVerticalDock ? info.MonitorPx.Height : info.MonitorPx.Width) / info.Scale;
+            ViewModel.SetFixedMainExtent(extent);
+        }
+
         var (left, top) = ComputePlacement();
 
         // Auto-hide: slide the window off-screen along its edge (HideProgress 0 shown → 1 hidden).
@@ -855,6 +902,8 @@ public partial class DockWindow : Window
         }
         PublishGlassRect();
         _backdropCapturer.Start();
+        if (_captureFriendly)
+            _backdropCapturer.EnterCaptureFriendly(); // a rebuilt capturer must not CAPTUREBLT the visible dock
     }
 
     /// <summary>The display's vertical refresh rate in Hz (60 if unknown).</summary>
@@ -969,13 +1018,14 @@ public partial class DockWindow : Window
     }
 
     /// <summary>
-    /// Publishes the capture rect (physical px) to the background capturer: the FULL window extent along
-    /// the bar's main axis at the bar's cross band — i.e. the maximum area any magnified bar can cover
-    /// (the bar only grows along the main axis while magnifying; its band is constant). Keeping the rect
-    /// independent of the per-frame bar width means the capturer never recreates its DIB (or resets its
-    /// frame diff) mid-magnification, and the excluded-window hole DWM must recomposite stays put; the
-    /// live bar's slice is cropped out via the brush viewbox instead (UpdateGlassClip). Runs on the UI
-    /// thread (PointToScreen / DPI are UI-only); only changes when the dock moves or is resized.
+    /// Publishes the capture rect (physical px) to the background capturer: the ENTIRE monitor edge
+    /// along the bar's main axis, at the bar's constant (unmagnified) cross band. The rect depends
+    /// only on the monitor and the bar's cross placement — NOT on the window's main-axis size, which
+    /// glides whenever tiles appear/shrink and used to retarget the capture every frame of that
+    /// glide (the capturer recreated its DIB and reset its frame diff mid-animation — visible
+    /// backdrop jitter). Now it only changes when the dock changes monitor/edge or its cross band
+    /// (icon size); the live bar's slice is cropped out via the brush viewbox (UpdateGlassClip).
+    /// Runs on the UI thread (PointToScreen / DPI are UI-only).
     /// </summary>
     private void PublishGlassRect()
     {
@@ -985,19 +1035,29 @@ public partial class DockWindow : Window
         try
         {
             var dpi = Dpi;
-            bool vertical = ViewModel.Settings.Edge is DockEdge.Left or DockEdge.Right;
-            double dipX = vertical ? ViewModel.BarLeft : 0;
-            double dipY = vertical ? 0 : ViewModel.BarTop;
-            double dipW = vertical ? ViewModel.BarWidth : ViewModel.WindowWidth;
-            double dipH = vertical ? ViewModel.WindowHeight : ViewModel.BarHeight;
-            var topLeft = PointToScreen(new Point(dipX, dipY)); // device px
-            int w = (int)Math.Round(dipW * dpi.DpiScaleX);
-            int h = (int)Math.Round(dipH * dpi.DpiScaleY);
-            if (w <= 0 || h <= 0)
-                return;
-            _glassCapX = (int)Math.Round(topLeft.X);
-            _glassCapY = (int)Math.Round(topLeft.Y);
-            _backdropCapturer.SetRect(_glassCapX, _glassCapY, w, h);
+            var monitor = Monitors.ForWindow(_hwnd).MonitorPx;
+            if (ViewModel.Settings.Edge is DockEdge.Left or DockEdge.Right)
+            {
+                // Full monitor height at the bar's horizontal band.
+                double barLeftPx = PointToScreen(new Point(ViewModel.BarLeft, 0)).X;
+                int w = (int)Math.Round(ViewModel.BarWidth * dpi.DpiScaleX);
+                if (w <= 0)
+                    return;
+                _glassCapX = (int)Math.Round(barLeftPx);
+                _glassCapY = (int)Math.Round(monitor.Y);
+                _backdropCapturer.SetRect(_glassCapX, _glassCapY, w, (int)Math.Round(monitor.Height));
+            }
+            else
+            {
+                // Full monitor width at the bar's vertical band.
+                double barTopPx = PointToScreen(new Point(0, ViewModel.BarTop)).Y;
+                int h = (int)Math.Round(ViewModel.BarHeight * dpi.DpiScaleY);
+                if (h <= 0)
+                    return;
+                _glassCapX = (int)Math.Round(monitor.X);
+                _glassCapY = (int)Math.Round(barTopPx);
+                _backdropCapturer.SetRect(_glassCapX, _glassCapY, (int)Math.Round(monitor.Width), h);
+            }
         }
         catch
         {
@@ -1067,8 +1127,8 @@ public partial class DockWindow : Window
            || (_glassSpecAmount == GlassSpecRestAmount && _glassLightUv == 0.0);
 
     /// <summary>Keeps the refraction clip geometry matched to the (magnifying) bar's rounded rect, and
-    /// crops the backdrop brush's viewbox to the bar's slice of the fixed max-extent capture (the
-    /// capture spans the whole window along the main axis — see PublishGlassRect). The bitmap is 96 DPI,
+    /// crops the backdrop brush's viewbox to the bar's slice of the fixed capture strip (the capture
+    /// spans the whole monitor edge along the main axis — see PublishGlassRect). The bitmap is 96 DPI,
     /// so absolute viewbox units equal capture pixels.</summary>
     /// <param name="barTopLeftPx">The bar's screen top-left (device px) when the caller already
     /// projected it this frame (SyncAcrylic); null → compute it here.</param>
@@ -1097,13 +1157,103 @@ public partial class DockWindow : Window
         }
     }
 
-    /// <summary>Excludes (or restores) the dock from screen capture via display affinity.</summary>
+    /// <summary>Excludes (or restores) the dock from screen capture via display affinity. While
+    /// capture-friendly mode is on, exclusion requests are downgraded to none (re-applied on exit).</summary>
     private void SetCaptureExclusion(bool exclude)
     {
         if (_hwnd == IntPtr.Zero)
             return;
         PInvoke.SetWindowDisplayAffinity((HWND)_hwnd,
-            exclude ? WINDOW_DISPLAY_AFFINITY.WDA_EXCLUDEFROMCAPTURE : WINDOW_DISPLAY_AFFINITY.WDA_NONE);
+            exclude && !_captureFriendly
+                ? WINDOW_DISPLAY_AFFINITY.WDA_EXCLUDEFROMCAPTURE : WINDOW_DISPLAY_AFFINITY.WDA_NONE);
+    }
+
+    // --- Capture-friendly mode (Snipping Tool) ---------------------------------------------------
+    // The Liquid Glass exclusion (above) hides the dock from EVERY capture API — including the user's
+    // Snipping Tool. While the user is capturing, the exclusion is lifted so the dock shows up in
+    // their snips/recordings, and the backdrop capturer either keeps running live (if a plain SRCCOPY
+    // blit omits layered windows on this build — it probes) or freezes on its last frame. Entered by
+    // Win+Shift+S / PrintScreen (keyboard hook) or a snipping app coming foreground; exits once no
+    // snipping-app window has been visible for a beat (1 s tick).
+
+    private static readonly string[] SnipProcessNames = { "SnippingTool", "ScreenClippingHost", "ScreenSketch" };
+    private bool _captureFriendly;
+    private DateTime _captureFriendlyHoldUntil; // minimum stay — the overlay takes a moment to appear
+
+    private void EnterCaptureFriendlyMode()
+    {
+        _captureFriendlyHoldUntil = DateTime.UtcNow.AddSeconds(3);
+        if (_captureFriendly)
+            return;
+        _captureFriendly = true;
+        SetCaptureExclusion(false);              // visible to the Snipping Tool
+        _backdropCapturer?.EnterCaptureFriendly(); // stop the glass from refracting the now-visible dock
+    }
+
+    /// <summary>Polled from the 1 s tick: leaves capture-friendly mode once the hold expired and no
+    /// snipping-app window is visible (the recording toolbar keeps one visible for a whole recording).</summary>
+    private void CheckCaptureFriendlyExit()
+    {
+        if (!_captureFriendly || DateTime.UtcNow < _captureFriendlyHoldUntil || AnySnipWindowVisible())
+            return;
+        _captureFriendly = false;
+        _backdropCapturer?.ExitCaptureFriendly();
+        if (ViewModel?.Settings.GlassEffect == GlassEffect.LiquidGlass && RefractionEffect.IsAvailable)
+            SetCaptureExclusion(true); // the black-flash DWM causes on re-exclusion is skipped by the capturer
+    }
+
+    private static bool IsForegroundSnipApp()
+    {
+        var fg = PInvoke.GetForegroundWindow();
+        return !fg.IsNull && IsSnipExe(TaskbarApps.GetWindowExePath((IntPtr)fg));
+    }
+
+    private static bool IsSnipExe(string exePath)
+    {
+        if (string.IsNullOrEmpty(exePath))
+            return false;
+        string stem = Path.GetFileNameWithoutExtension(exePath);
+        foreach (string name in SnipProcessNames)
+        {
+            if (stem.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Any visible, non-cloaked top-level window owned by a snipping app? (The packaged
+    /// Snipping Tool lingers suspended — with cloaked windows — after its UI closes, so a bare
+    /// process-exists test would never let the mode end.) Only runs while the mode is on.</summary>
+    private static unsafe bool AnySnipWindowVisible()
+    {
+        var pids = new HashSet<uint>();
+        foreach (string name in SnipProcessNames)
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName(name))
+            {
+                using (p)
+                    pids.Add((uint)p.Id);
+            }
+        }
+        if (pids.Count == 0)
+            return false;
+
+        bool found = false;
+        PInvoke.EnumWindows((hwnd, _) =>
+        {
+            uint pid = 0;
+            PInvoke.GetWindowThreadProcessId(hwnd, &pid);
+            if (!pids.Contains(pid) || !PInvoke.IsWindowVisible(hwnd))
+                return true;
+            uint cloaked = 0;
+            PInvoke.DwmGetWindowAttribute(hwnd,
+                Windows.Win32.Graphics.Dwm.DWMWINDOWATTRIBUTE.DWMWA_CLOAKED, &cloaked, sizeof(uint));
+            if (cloaked != 0)
+                return true;
+            found = true;
+            return false; // stop enumerating
+        }, default);
+        return found;
     }
 
     /// <summary>Shows/hides the Liquid Glass rim overlay and runs (or stops) its drifting shimmer.</summary>
@@ -2295,7 +2445,13 @@ public partial class DockWindow : Window
             var w = PointFromScreen(new Point(cursor.X, cursor.Y));
             _mouseX = w.X;
             _mouseY = w.Y;
-            _hovering = w.X >= 0 && w.Y >= 0 && w.X <= ViewModel.WindowWidth && w.Y <= ViewModel.WindowHeight;
+            // The window spans the whole monitor edge, so "inside the window" would hover the entire
+            // screen band; test the centered footprint a fully-magnified bar can cover instead.
+            double mainPos = IsVerticalDock ? w.Y : w.X;
+            double mainSize = IsVerticalDock ? ViewModel.WindowHeight : ViewModel.WindowWidth;
+            double half = (ViewModel.HoverExtentMain > 0 ? ViewModel.HoverExtentMain : mainSize) / 2;
+            _hovering = w.X >= 0 && w.Y >= 0 && w.X <= ViewModel.WindowWidth && w.Y <= ViewModel.WindowHeight
+                && Math.Abs(mainPos - mainSize / 2) <= half;
         }
 
         // Suppress magnification while resizing via a separator (icons stay at the new resting size).

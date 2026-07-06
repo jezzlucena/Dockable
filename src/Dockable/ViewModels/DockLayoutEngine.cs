@@ -69,6 +69,7 @@ public sealed class DockLayoutEngine
     private double _restingBlockMain;  // main-axis start of the resting (un-magnified) row
     private double _alongWindow;       // window size along the main axis (eased toward the target)
     private double _alongWindowTarget; // recomputed main-axis size; _alongWindow glides to it per frame
+    private double _fixedMainExtent;   // full monitor edge (DIP); >0 pins the window's main-axis size
     private double _crossWindow;       // window size along the cross (depth) axis
     private double _gapExtent;         // eased width of the drag/drop placeholder gap (0 when closed)
 
@@ -139,7 +140,11 @@ public sealed class DockLayoutEngine
     public int ComputeDropPathIndex(double mouseMain)
         => PathsBeforeCursor(new List<DockItemViewModel>(_vm.Items), mouseMain);
 
-    public void Recompute()
+    /// <summary>Recomputes geometry from the current items/settings. Returns true while something
+    /// still needs frames to settle (e.g. the window main-axis glide toward a new target) — the
+    /// caller must then get the render loop running, or the dock freezes mid-glide (historically:
+    /// items added while idle left the window narrower than its row, icons clipped at the sides).</summary>
+    public bool Recompute()
     {
         var s = _vm.Settings;
         _baseSize = s.IconSize > 0 ? s.IconSize : 48;
@@ -157,13 +162,20 @@ public sealed class DockLayoutEngine
         // Reserve enough depth for whichever is taller: a magnified icon or a bouncing one.
         double iconArea = Math.Max(grownHeight, _baseSize + _baseSize * BounceLift);
         _crossWindow = iconArea + EdgeMargin + TopHeadroom + 8;
-        // Reserve room for a drag gap as well so the window never clips during a reorder.
-        // The main-axis size is a TARGET: the actual window glides toward it per frame (Update) —
-        // stepping it here desynced the Win32 resize from the content for a frame, so the whole
-        // dock visibly jittered whenever a tile was added or removed.
-        _alongWindowTarget = ComputeMaxMagnifiedAlong() + _baseSize + Gap + 2 * HPad + 30;
-        if (_alongWindow <= 0)
-            _alongWindow = _alongWindowTarget; // first layout: nothing on screen yet, snap
+        // The extent any magnified bar (plus a drag gap) can cover — the window size when no fixed
+        // extent is pinned, and always the cursor hover footprint (see HoverExtentMain).
+        double contentExtent = ComputeMaxMagnifiedAlong() + _baseSize + Gap + 2 * HPad + 30;
+        // With a monitor edge pinned (the normal case), the window NEVER resizes along the main
+        // axis: tiles growing in/out animate purely in canvas coordinates, which render atomically —
+        // resizing + recentering the window instead desyncs the native rect from the layered bitmap
+        // for a frame each step (visible jitter, even eased). Unpinned (before the first
+        // PositionDock), the old glide-to-content-size behavior remains.
+        _alongWindowTarget = _fixedMainExtent > 0 ? _fixedMainExtent : contentExtent;
+        if (_alongWindow <= 0 || _fixedMainExtent > 0)
+            _alongWindow = _alongWindowTarget; // fixed strip (or first layout): snap, nothing glides
+        // The strip window is monitor-wide, so "cursor inside the window" is no longer a hover test;
+        // DockWindow tests this centered footprint instead.
+        _vm.HoverExtentMain = Math.Min(contentExtent, _alongWindowTarget);
 
         if (IsVertical)
         {
@@ -189,7 +201,27 @@ public sealed class DockLayoutEngine
         // run mid-hover (a departed tile finalizing, the 1 s refresh reconciling): the old reset of
         // every CurrentScale to 1 + a hovering:false step made the magnification blink off and
         // back on under the cursor — a visible width jitter on every add/remove while hovering.
-        Update(_lastMouseMain, _lastHovering, ReferenceFrameMs);
+        return Update(_lastMouseMain, _lastHovering, ReferenceFrameMs);
+    }
+
+    /// <summary>Snaps the window's main-axis size straight to its recomputed target — no glide.
+    /// Startup only, before the dock has rendered: the initial layout snaps with just the Start tile,
+    /// then the first taskbar refresh widens the target, and gliding there would show the dock
+    /// clipped at the sides until the ease caught up.</summary>
+    public void SnapWindowSize()
+    {
+        _alongWindow = 0; // re-arm Recompute's first-layout snap
+        Recompute();
+    }
+
+    /// <summary>Pins the window's main-axis size to the monitor's full edge extent (DIP). Returns
+    /// true when the value actually changed — the caller should recompute then.</summary>
+    public bool SetFixedMainExtent(double extentDip)
+    {
+        if (Math.Abs(_fixedMainExtent - extentDip) < 0.5)
+            return false;
+        _fixedMainExtent = extentDip;
+        return true;
     }
 
     /// <summary>Advances the layout one frame. <paramref name="mouseMain"/> is the cursor's main-axis

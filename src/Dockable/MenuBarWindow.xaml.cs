@@ -125,7 +125,22 @@ public partial class MenuBarWindow : Window
         if (Fullscreen.IsForegroundOwnProcess(_ownProcessId))
             return;
 
-        bool fullscreen = Fullscreen.IsForegroundFullscreenOnMonitorOf(_hwnd, _ownProcessId);
+        bool fullscreen = (ViewModel?.Settings.HideOnFullscreen ?? true)
+            && Fullscreen.IsForegroundFullscreenOnMonitorOf(_hwnd, _ownProcessId);
+        SetFullscreenHidden(fullscreen);
+    }
+
+    /// <summary>Applies a HideOnFullscreen setting change now: turning it off restores a bar that's
+    /// currently hidden for a full-screen app (bypassing the own-process foreground guard — the click
+    /// came from our Preferences window). Turning it on takes effect on the next fullscreen check.</summary>
+    internal void ApplyHideOnFullscreen()
+    {
+        if (ViewModel is { Settings.HideOnFullscreen: false })
+            SetFullscreenHidden(false);
+    }
+
+    private void SetFullscreenHidden(bool fullscreen)
+    {
         if (fullscreen == _fullscreenActive)
             return;
         _fullscreenActive = fullscreen;
@@ -195,7 +210,7 @@ public partial class MenuBarWindow : Window
             return; // same app still focused; its display name doesn't change with the window title
 
         _appHwnd = fgPtr;
-        ViewModel.AppName = ForegroundApp.DisplayName(fgPtr, pid);
+        ViewModel.AppName = ViewModel.AppDisplayName(fgPtr);
         RefreshAppMenus(fgPtr);
     }
 
@@ -206,7 +221,7 @@ public partial class MenuBarWindow : Window
             if (PInvoke.IsIconic((HWND)w.Hwnd))
                 continue; // minimized windows keep their Z-slot but aren't what the user sees
             _appHwnd = w.Hwnd;
-            ViewModel!.AppName = ForegroundApp.DisplayName(w.Hwnd, WindowControl.GetProcessId(w.Hwnd));
+            ViewModel!.AppName = ViewModel.AppDisplayName(w.Hwnd);
             RefreshAppMenus(w.Hwnd);
             return;
         }
@@ -458,7 +473,7 @@ public partial class MenuBarWindow : Window
                 list = new List<IntPtr>();
                 windowsByApp[key] = list;
                 order.Add(key);
-                names[key] = ForegroundApp.DisplayName(w.Hwnd, WindowControl.GetProcessId(w.Hwnd));
+                names[key] = ViewModel!.AppDisplayName(w.Hwnd);
             }
             list.Add(w.Hwnd);
         }

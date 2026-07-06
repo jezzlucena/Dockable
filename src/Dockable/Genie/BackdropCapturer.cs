@@ -18,6 +18,14 @@ namespace Dockable.Genie;
 /// The poll rate is <b>adaptive</b>: it runs fast while the backdrop is moving (e.g. a video plays
 /// behind the dock) and backs off to a low idle rate once it's been static for a while, so a still
 /// desktop doesn't burn a CPU core on read-backs that change nothing.
+///
+/// <b>Capture-friendly mode</b> (<see cref="EnterCaptureFriendly"/>): while the user is screen-capturing
+/// (Snipping Tool), the dock's WDA_EXCLUDEFROMCAPTURE is lifted so the dock shows up in their capture —
+/// which would also make our own CAPTUREBLT grab see the dock and feed the glass its own rendering
+/// (runaway feedback). On entry the capture thread probes whether a plain SRCCOPY blit (no CAPTUREBLT)
+/// still omits layered windows (the dock is one) on this Windows build: if it does, capture keeps
+/// running <b>live</b> with that ROP; if not (or the backdrop is animating so the probe can't tell),
+/// it <b>freezes</b> on the last uploaded frame until <see cref="ExitCaptureFriendly"/>.
 /// </summary>
 public sealed unsafe class BackdropCapturer : IDisposable
 {
@@ -66,6 +74,29 @@ public sealed unsafe class BackdropCapturer : IDisposable
     private byte[]? _ready;
     private int _readyW, _readyH;
     private volatile bool _pending;
+
+    // --- Capture-friendly mode (see the class doc) ---
+    private enum FriendlyState { Off, Probe, Live, Frozen }
+
+    private volatile int _friendly = (int)FriendlyState.Off; // FriendlyState (volatile enums aren't a thing)
+    private long _friendlyEnterMs;  // TickCount64 at entry — DWM needs a beat to recomposite the un-excluded dock
+    private int _probeTries;
+    private byte[]? _probeA;        // probe scratch (capture-thread only)
+    private byte[]? _probeB;
+
+    /// <summary>Enters capture-friendly mode (the dock's capture exclusion was just lifted). Cheap;
+    /// safe from any thread. No-op if already in it.</summary>
+    public void EnterCaptureFriendly()
+    {
+        if ((FriendlyState)_friendly != FriendlyState.Off)
+            return;
+        _probeTries = 0;
+        _friendlyEnterMs = Environment.TickCount64;
+        _friendly = (int)FriendlyState.Probe;
+    }
+
+    /// <summary>Back to normal CAPTUREBLT capture (the dock's capture exclusion is being restored).</summary>
+    public void ExitCaptureFriendly() => _friendly = (int)FriendlyState.Off;
 
     public BackdropCapturer(Dispatcher ui, Action<byte[], int, int> upload, int fastFps, int idleFps,
         GlassProfiler? profiler)
@@ -134,11 +165,26 @@ public sealed unsafe class BackdropCapturer : IDisposable
             while (_running)
             {
                 double t0 = sw.Elapsed.TotalMilliseconds;
-                bool changed = CaptureOnce();
-                staticFrames = changed ? 0 : staticFrames + 1;
+                double waitMs;
+                var friendly = (FriendlyState)_friendly;
+                if (friendly == FriendlyState.Frozen)
+                {
+                    // Parked on the last uploaded frame; just watch for the mode to end.
+                    waitMs = 250;
+                }
+                else if (friendly == FriendlyState.Probe)
+                {
+                    ProbeOnce();
+                    waitMs = 30 - (sw.Elapsed.TotalMilliseconds - t0);
+                }
+                else
+                {
+                    bool changed = CaptureOnce(plainRop: friendly == FriendlyState.Live);
+                    staticFrames = changed ? 0 : staticFrames + 1;
 
-                int fps = staticFrames > IdleAfterStaticFrames ? _idleFps : _fastFps;
-                double waitMs = 1000.0 / fps - (sw.Elapsed.TotalMilliseconds - t0);
+                    int fps = staticFrames > IdleAfterStaticFrames ? _idleFps : _fastFps;
+                    waitMs = 1000.0 / fps - (sw.Elapsed.TotalMilliseconds - t0);
+                }
                 if (waitMs > 0.3)
                     WaitFor(timer, waitMs);
             }
@@ -186,7 +232,9 @@ public sealed unsafe class BackdropCapturer : IDisposable
     private static extern bool CloseHandle(IntPtr handle);
 
     /// <summary>One BitBlt + diff. Returns true if the frame changed (and was queued for upload).</summary>
-    private bool CaptureOnce()
+    /// <param name="plainRop">Capture-friendly live mode: blit without CAPTUREBLT so the (layered,
+    /// no-longer-affinity-excluded) dock stays out of its own backdrop.</param>
+    private bool CaptureOnce(bool plainRop)
     {
         int x, y, w, h;
         int ix, iy, iw, ih;
@@ -215,20 +263,8 @@ public sealed unsafe class BackdropCapturer : IDisposable
         if ((w != _w || h != _h || _dib.IsNull) && !Recreate(w, h))
             return false;
 
-        HDC screenDc = PInvoke.GetDC((HWND)IntPtr.Zero);
-        if (screenDc.IsNull)
-            return false;
         _profiler?.TickStart(); // measured region: the BitBlt read-back + diff (always paired with TickEnd)
-        bool blitOk;
-        try
-        {
-            blitOk = PInvoke.BitBlt(_memDc, 0, 0, w, h, screenDc, x, y, CaptureRop);
-        }
-        finally
-        {
-            PInvoke.ReleaseDC((HWND)IntPtr.Zero, screenDc);
-        }
-        if (!blitOk)
+        if (!Blit(x, y, w, h, plainRop ? ROP_CODE.SRCCOPY : CaptureRop))
         {
             _profiler?.TickEnd(false, w, h);
             return false;
@@ -288,6 +324,130 @@ public sealed unsafe class BackdropCapturer : IDisposable
             if (_ready is not null)
                 _upload(_ready, _readyW, _readyH);
         }
+    }
+
+    /// <summary>One screen-DC blit into the reusable DIB.</summary>
+    private bool Blit(int x, int y, int w, int h, ROP_CODE rop)
+    {
+        HDC screenDc = PInvoke.GetDC((HWND)IntPtr.Zero);
+        if (screenDc.IsNull)
+            return false;
+        try
+        {
+            return PInvoke.BitBlt(_memDc, 0, 0, w, h, screenDc, x, y, rop);
+        }
+        finally
+        {
+            PInvoke.ReleaseDC((HWND)IntPtr.Zero, screenDc);
+        }
+    }
+
+    /// <summary>
+    /// Capture-friendly probe: with the dock's exclusion lifted, three back-to-back grabs — CAPTUREBLT
+    /// (dock included), plain SRCCOPY, CAPTUREBLT again. If the two CAPTUREBLT grabs match (backdrop
+    /// held still through the probe) and the SRCCOPY one differs strongly (the layered dock is absent
+    /// from it), a plain blit is a safe live path → <see cref="FriendlyState.Live"/>. Otherwise retry
+    /// briefly, then park on the last frame (<see cref="FriendlyState.Frozen"/>) — the safe verdict.
+    /// </summary>
+    private void ProbeOnce()
+    {
+        if (Environment.TickCount64 - _friendlyEnterMs < 150)
+            return; // DWM may still be recompositing the un-excluded dock (transient black/torn grabs)
+
+        int x, y, w, h;
+        int ix, iy, iw, ih;
+        lock (_rectLock)
+        {
+            if (!_haveRect)
+                return;
+            x = _rx; y = _ry; w = _rw; h = _rh;
+            if (_haveInterest)
+            {
+                ix = Math.Clamp(_ix - x, 0, w); iy = Math.Clamp(_iy - y, 0, h);
+                iw = Math.Clamp(_iw, 0, w - ix); ih = Math.Clamp(_ih, 0, h - iy);
+            }
+            else
+            {
+                ix = 0; iy = 0; iw = w; ih = h;
+            }
+            if (iw == 0 || ih == 0)
+            {
+                ix = 0; iy = 0; iw = w; ih = h;
+            }
+        }
+        if (w <= 0 || h <= 0 || w > 20000 || h > 20000 || ((w != _w || h != _h || _dib.IsNull) && !Recreate(w, h)))
+        {
+            RetryOrFreeze();
+            return;
+        }
+
+        int len = w * 4 * h;
+        if (_probeA is null || _probeA.Length < len)
+            _probeA = new byte[len];
+        if (_probeB is null || _probeB.Length < len)
+            _probeB = new byte[len];
+
+        var cur = new ReadOnlySpan<byte>(_bits, len);
+        if (!Blit(x, y, w, h, CaptureRop)) { RetryOrFreeze(); return; }
+        cur.CopyTo(_probeA);
+        if (!Blit(x, y, w, h, ROP_CODE.SRCCOPY)) { RetryOrFreeze(); return; }
+        cur.CopyTo(_probeB);
+        if (!Blit(x, y, w, h, CaptureRop)) { RetryOrFreeze(); return; }
+
+        // Transitional black frames (DWM recompositing) → try again shortly.
+        if (LooksBlack(_probeA, w, ix, iy, iw, ih) || LooksBlack(_probeB, w, ix, iy, iw, ih)
+            || LooksBlack(cur, w, ix, iy, iw, ih))
+        {
+            RetryOrFreeze();
+            return;
+        }
+
+        if (DiffPercent(_probeA, cur, w, ix, iy, iw, ih) > 2.0)
+        {
+            RetryOrFreeze(); // backdrop moved mid-probe (video playing) — the verdict would be unreliable
+            return;
+        }
+
+        if (DiffPercent(_probeA, _probeB, w, ix, iy, iw, ih) >= 12.0)
+        {
+            // SRCCOPY omits the layered dock on this build → keep capturing LIVE with it.
+            _havePrev = false; // the retained prev frame predates the mode; force the next frame through
+            _friendly = (int)FriendlyState.Live;
+        }
+        else
+        {
+            // The plain blit sees the dock too (or the bar is indistinguishable from its backdrop) —
+            // live capture would feed back. Park on the last good frame.
+            _friendly = (int)FriendlyState.Frozen;
+        }
+    }
+
+    private void RetryOrFreeze()
+    {
+        if (++_probeTries >= 20) // ~600 ms of trying (e.g. a video behind the bar never holds still)
+            _friendly = (int)FriendlyState.Frozen;
+    }
+
+    /// <summary>Percentage of sampled interest-region pixels whose colour differs noticeably between
+    /// two frames. Same sampling lattice as <see cref="LooksBlack"/>.</summary>
+    private static double DiffPercent(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b, int frameW,
+        int ix, int iy, int iw, int ih)
+    {
+        int samples = 0, moved = 0;
+        int stride = frameW * 4;
+        for (int y = iy; y < iy + ih; y += 4)       // every 4th row
+        {
+            int row = y * stride;
+            for (int x = ix; x < ix + iw; x += 32)  // every 32nd pixel
+            {
+                int i = row + x * 4;
+                samples++;
+                if (Math.Abs(a[i] - b[i]) > 12 || Math.Abs(a[i + 1] - b[i + 1]) > 12
+                    || Math.Abs(a[i + 2] - b[i + 2]) > 12)
+                    moved++;
+            }
+        }
+        return samples == 0 ? 0 : moved * 100.0 / samples;
     }
 
     /// <summary>True when most of the visible (interest) region is exact RGB 0,0,0 — the

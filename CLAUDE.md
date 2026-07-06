@@ -354,6 +354,7 @@ src/Dockable/
 | `TaskbarVisibility` | `Never` | `TaskbarVisibility`: Always (visible) / Auto (native auto-hide, reveal on hover) / Never (fully hidden — default; the dock replaces the taskbar). Pre-launch state restored on exit/crash/kill (watchdog). |
 | `ShowMenuBar` | true | Show the macOS-style top menu bar (reserves a strip at the top of the primary monitor). |
 | `AutoHideDock` | false | "Automatically hide and show the Dock" (Preferences + the dock menu's "Turn Hiding On/Off"). Implemented: the dock slides off its edge when idle (`HideProgress` DP animates, `PositionDock` applies the offset), reveals when the cursor presses a 2px edge sliver (`_autoHideTimer` 120 ms watcher; "activity" = hover, drags, flyout, any menu via `Mouse.Captured`, in-flight warps), and the **AppBar strip stays UNRESERVED the whole time it's on** (`ReserveAppBarSpace` unregisters and bails). |
+| `HideOnFullscreen` | true | "Hide on fullscreen apps and games" (Preferences → Dock, under Auto-hide): fully hide the dock + menu bar (windows `Hide()`n, AppBar strips released — not just slid off-screen) while a full-screen/borderless-fullscreen app owns their monitor. Off = they stay visible over full-screen content. Gated in both `UpdateFullscreenState`s; the toggle's `ApplyHideOnFullscreen()` restores a hidden window immediately (bypasses the own-process foreground guard). |
 | `ShowRunningIndicators` | true | Show the running-dot under apps with open windows. |
 | `AnimateOpeningApps` | true | Bounce an app's icon when it gains a new window (ONE hop; the bounce is an icon-only RenderTransform — `BounceX/Y` set by the engine per edge — so the running dot stays put). Also gates the **attention bounce**: 3 hops when a window flashes its taskbar button (shell hook: `RegisterShellHookWindow` → `HSHELL_FLASH` 0x8006 in WndProc; repeat flashes don't restart a playing bounce). |
 | `MinimizeIntoIcon` | false | Minimize into the app's dock icon instead of a separate tile. |
@@ -453,17 +454,25 @@ src/Dockable/
   time auto-hide is on** — even while revealed (`ReserveAppBarSpace` unregisters and bails); the
   dock overlays maximized windows like macOS. Toggled from Preferences or the dock menu's "Turn
   Hiding On/Off" → both call `DockWindow.ApplyAutoHide()` (internal).
-- **The window's main-axis size GLIDES, never steps** (`DockLayoutEngine._alongWindowTarget` →
-  eased `_alongWindow` per frame; the drag-gap width `_gapExtent` eases too): stepping the size on
-  tile add/remove desynced the Win32 resize from the content for a frame — the whole dock jittered.
-  `_restingBlockMain` follows the EASED size, which keeps `RestingCenterOf` warp aims exact (for a
-  monitor-centered dock the easing and centering offsets cancel in screen space). `ApplyWindowSize`
-  runs per frame during the glide, so it re-reserves the AppBar **only when the cross-axis size
-  changed** (`_lastReservedCross`) — else maximized windows would reflow every frame. Related:
+- **The window's main-axis size is PINNED to the full monitor edge** (a fixed strip;
+  `DockLayoutEngine.SetFixedMainExtent`, fed by `PositionDock` from `Monitors.ForWindow` on every
+  reposition — monitor/DPI/edge changes are the only resizes). History: the size used to track the
+  max-magnified content and step (then glide) on tile add/remove — but ANY per-frame window
+  resize+recenter desyncs the native rect from the layered bitmap for a frame (visible jitter, even
+  eased). With the strip pinned, tiles growing in/out animate purely in canvas coordinates, which
+  render atomically. Transparent strip pixels are click-through (per-pixel layered hit-testing), so
+  the wide window doesn't eat input — but **the cursor hover test can't be "inside the window"
+  anymore**: the engine publishes `DockViewModel.HoverExtentMain` (the max-magnified content extent,
+  centered) and `OnRendering` tests that footprint. The drag-gap width `_gapExtent` still eases; the
+  unpinned glide path survives only for the pre-first-`PositionDock` window. Related invariants:
   `Recompute()` must NEVER reset `CurrentScale`s or step with a forced no-hover — it runs mid-hover
   (departed tile finalizing, 1 s refresh), and doing so blinked the magnification off/on under the
-  cursor (width jitter). Its nominal step reuses the engine's last-seen cursor state
-  (`_lastMouseMain`/`_lastHovering`).
+  cursor (width jitter); its nominal step reuses the engine's last-seen cursor state
+  (`_lastMouseMain`/`_lastHovering`). `Recompute()` returns true while anything still needs frames
+  and `DockViewModel.RecomputeLayout` raises `AnimationRequested` (→ `HookRendering`) so appear/gap
+  eases finish even with no hover/bounce/drag. At **startup**, `StartTaskbarMirror` calls
+  `ViewModel.SnapWindowSize()` + `SyncAcrylic()` after the first population so the dock and the
+  glass capture rect are full-size before first paint.
 - **AppBar reserves exactly the resting (un-magnified) dock**, not the taller window that holds
   magnified/overflowing icons. `ReserveAppBarSpace` reserves from the docked edge to the bar's **far**
   edge (`WindowHeight - BarTop` for Bottom, i.e. including the bar's small margin from the screen edge —
@@ -589,10 +598,15 @@ src/Dockable/
   windows) / Force Quit \<focused app\> (`Process.Kill`) / Sleep / Restart… / Shut Down… / Lock Screen /
   Log Out \<user\>… — power/session items via `Interop/SystemActions`; the "…" ones confirm via
   `ConfirmDialog(showDoNotAskAgain:false)`) then the focused app's **friendly display name** — e.g.
-  "Google Chrome" (not "chrome", not the window title), resolved by `Shell/ForegroundApp`: UWP/Store apps
-  via the window's AUMID → `shell:AppsFolder` name (the dock's approach — the host ApplicationFrameHost
-  exe isn't the app), else the exe's `FileVersionInfo.FileDescription` (→ shell name → title-cased stem →
-  window-title fallbacks). The bar tracks the last real app (`_appHwnd`, via `Interop/TitleWatcher`,
+  "Google Chrome" (not "chrome", not the window title), resolved by
+  `DockViewModel.AppDisplayNameForWindow` (exposed as `MenuBarViewModel.AppDisplayName`) — **the same
+  funnel that names the dock tiles**, so the bar and dock never disagree (a separate `Shell/ForegroundApp`
+  resolver used to exist; it drifted — "Windows Terminal Host", raw "SnippingTool.exe" — and was deleted).
+  Tile-first: a window represented by a dock tile returns the tile's label (which benefits from the
+  identity cache's AUMID retries and remembered pin names); unrepresented windows derive the way tiles
+  do: packaged AUMID → `shell:AppsFolder` name, else remembered pin name →
+  `FileVersionInfo.FileDescription` → extension-less stem (never a raw "Foo.exe") → window title.
+  The Recent Apps submenu and the startup seed use the same funnel. The bar tracks the last real app (`_appHwnd`, via `Interop/TitleWatcher`,
   skipping our own process — EXCEPT the Dock Preferences window, which is represented like any app
   under its dock-tile name `Window_DockPreferences`, with no mirrored menus: it's WPF/no HMENU, and
   UIA-scanning one's own process is deadlock-prone. The dock/menu-bar windows themselves stay
@@ -849,7 +863,23 @@ src/Dockable/
   weighted tap kernel stepped by real device pixels via WPF's `DdxUvDdyUvRegisterIndex`) over the
   captured backdrop; HLSL compiled at runtime by `Interop/ShaderCompiler`; falls back to Acrylic where
   unsupported).
-- Pins are dock-owned, NOT written back to the Windows taskbar (Windows blocks it — see above).
+- **Liquid Glass hides the dock from screen capture** (`SetCaptureExclusion` →
+  `WDA_EXCLUDEFROMCAPTURE`, set while refraction is on) so the `BackdropCapturer`'s screen BitBlt
+  doesn't refract the dock itself. That affinity is global to ALL capture APIs (Snipping Tool too),
+  so a **capture-friendly mode** lifts it while the user is capturing: entered on Win+Shift+S /
+  PrintScreen (observe-only watch in `MinimizeInterceptHook.ScreenSnipRequested` — must fire BEFORE
+  the snip overlay grabs the screen, hence Send priority) or a snipping app (SnippingTool /
+  ScreenClippingHost / ScreenSketch) coming foreground; exits via the 1 s tick once no visible,
+  non-cloaked snipping-app window remains (the packaged Snipping Tool lingers SUSPENDED with cloaked
+  windows — a process-exists test would never exit) + a 3 s minimum hold. While in the mode,
+  `SetCaptureExclusion(true)` requests are downgraded (so ApplyGlassEffect re-runs can't re-hide),
+  and the fullscreen hide ignores the snip overlay (it covers the whole monitor and would otherwise
+  hide the dock with `HideOnFullscreen` on). The capturer itself (`EnterCaptureFriendly`) PROBES
+  whether a plain SRCCOPY blit (no CAPTUREBLT) omits layered windows on this Windows build (three
+  back-to-back grabs: CAPTUREBLT/SRCCOPY/CAPTUREBLT; the repeat detects a mid-probe backdrop change):
+  if yes → glass keeps updating LIVE with SRCCOPY (the layered dock stays out of its own capture);
+  if no/inconclusive → it freezes on the last uploaded frame until exit. Freeze is the safe verdict —
+  a wrong "live" would feed the glass its own rendering (runaway feedback).
 - **Internationalization is in-code** (no `.resx`/satellite assemblies): `Localization/LocData`
   holds per-language string tables, `Loc` is the runtime service, and the `{loc:Loc Key=…}` markup
   extension binds XAML text to `Loc.Instance[Key]` so a language change updates **live**. Code-built

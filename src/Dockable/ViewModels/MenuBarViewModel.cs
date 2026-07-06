@@ -24,6 +24,10 @@ public sealed partial class MenuBarViewModel : ObservableObject
     /// own-process window the menu bar represents like a regular app.</summary>
     public IntPtr PreferencesHwnd => _dock.PreferencesHwnd;
 
+    /// <summary>The dock's app-naming funnel, so the bar shows exactly the names the dock tiles show
+    /// (AppsFolder names for packaged apps, remembered pin names, never a raw "Foo.exe").</summary>
+    public string AppDisplayName(IntPtr hwnd) => _dock.AppDisplayNameForWindow(hwnd);
+
     /// <summary>The focused app's friendly display name, e.g. "Google Chrome" (leading side of the bar).</summary>
     [ObservableProperty] private string _appName = string.Empty;
 
