@@ -171,6 +171,13 @@ public sealed class DockSettings
     /// <summary>Show the running-indicator dot under apps that have open windows.</summary>
     public bool ShowRunningIndicators { get; set; } = true;
 
+    /// <summary>
+    /// Show the built-in Dock Preferences tile on the dock. Mirrors whether the Preferences
+    /// pseudo-app is pinned (<see cref="PinnedApps"/> stays the source of truth — reconciled at
+    /// load, then kept in sync by the Preferences toggle and the tile's "Keep in Dock" menu).
+    /// </summary>
+    public bool ShowSettingsInDock { get; set; } = true;
+
     /// <summary>Bounce an app's dock icon when it gains a new window (e.g. on launch).</summary>
     public bool AnimateOpeningApps { get; set; } = true;
 
@@ -227,6 +234,14 @@ public sealed class DockSettings
     /// AppsFolder AUMID doesn't carry the human name the .lnk / running app had.
     /// </summary>
     public Dictionary<string, string>? PinNames { get; set; }
+
+    /// <summary>
+    /// Custom icon images for pinned launch paths, chosen via the pin's "Change Icon…" menu.
+    /// Values are file names inside the AppData icon cache (<c>%APPDATA%\Dockable\icons</c>,
+    /// see <c>Services.PinIconCache</c>) — the chosen image is imported there so the pin keeps
+    /// its icon even if the original file moves.
+    /// </summary>
+    public Dictionary<string, string>? PinIcons { get; set; }
 
     public static DockSettings CreateDefault() => new();
 }

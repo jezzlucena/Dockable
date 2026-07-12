@@ -238,6 +238,14 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
+        // "Show Dockable Settings on the Dock" mirrors whether the Preferences pseudo-app is pinned;
+        // the pin list stays the source of truth so removals from before this setting existed stick.
+        if (Settings.ShowSettingsInDock != IsPreferencesPinned)
+        {
+            Settings.ShowSettingsInDock = IsPreferencesPinned;
+            Save();
+        }
+
         // Seed the user's Downloads folder as a pinned stack once (macOS ships with Downloads in
         // the Dock, sorted by Date Added and fanning out). The flag makes removal stick.
         if (!Settings.SeededDownloadsPin)
@@ -255,7 +263,14 @@ public sealed partial class DockViewModel : ObservableObject
             Save();
         }
 
-        _startVm = new DockItemViewModel(DockItem.CreateStartMenu());
+        _startVm = new DockItemViewModel(DockItem.CreateStartMenu())
+        {
+            // The sentinel path keys the Start tile's custom icon in PinIcons (never launched).
+            LaunchPath = DockItem.StartLaunchPath,
+            CustomIconPath = CustomIconPathFor(DockItem.StartLaunchPath),
+        };
+        if (_startVm.CustomIconPath is not null)
+            _ = _startVm.LoadIconAsync(IconPixelSize);
         _pinSeparatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-pinned"));
         _separatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-minimized"));
         _recycleSeparatorVm = new DockItemViewModel(DockItem.CreateSeparator("separator-recycle"));
@@ -548,7 +563,10 @@ public sealed partial class DockViewModel : ObservableObject
         // Load the icon after Windows is set, so apps with no readable exe (launchPath empty) can fall
         // back to their window's own icon.
         if (isNew)
+        {
+            vm.CustomIconPath = CustomIconPathFor(launchPath);
             _ = vm.LoadIconAsync(IconPixelSize);
+        }
         return vm;
     }
 
@@ -574,6 +592,10 @@ public sealed partial class DockViewModel : ObservableObject
             };
             vm.AppearScale = _appsInitialized ? 0.0 : 1.0; // grow in like any other tile
             _appByKey[key] = vm;
+            // A user-set custom icon (PinIcons) replaces the bundled glyph once loaded.
+            vm.CustomIconPath = CustomIconPathFor(DockItem.PreferencesLaunchPath);
+            if (vm.CustomIconPath is not null)
+                _ = vm.LoadIconAsync(IconPixelSize);
         }
         else if (vm.Departing)
         {
@@ -760,6 +782,25 @@ public sealed partial class DockViewModel : ObservableObject
         RememberTaskbarPins(pins); // also saves
     }
 
+    /// <summary>Whether the built-in Dock Preferences pseudo-app is currently pinned.</summary>
+    public bool IsPreferencesPinned =>
+        Settings.PinnedApps?.Contains(DockItem.PreferencesLaunchPath, StringComparer.OrdinalIgnoreCase) == true;
+
+    /// <summary>Shows/hides the built-in Dock Preferences tile: pins/unpins the pseudo-app and keeps
+    /// the mirrored <see cref="DockSettings.ShowSettingsInDock"/> flag in step — the Preferences
+    /// toggle and the tile's "Keep in Dock" context menu both drive this one method.</summary>
+    public void SetShowSettingsInDock(bool show)
+    {
+        bool pinned = IsPreferencesPinned;
+        Settings.ShowSettingsInDock = show;
+        if (show && !pinned)
+            PinApp(DockItem.PreferencesLaunchPath, int.MaxValue); // saves
+        else if (!show && pinned)
+            UnpinApp(DockItem.PreferencesLaunchPath);             // saves
+        else
+            Save(); // no pin change, but the flag itself must still persist
+    }
+
     public void UnpinApp(string launchPath)
     {
         var list = Settings.PinnedApps;
@@ -767,6 +808,88 @@ public sealed partial class DockViewModel : ObservableObject
             return;
         if (list.RemoveAll(p => string.Equals(p, launchPath, StringComparison.OrdinalIgnoreCase)) > 0)
             Save();
+    }
+
+    // --- Custom pin icons (user-chosen .png/.svg replacing the extracted icon) -----------
+
+    /// <summary>Sets a custom icon for a pinned shortcut: imports the image into the AppData icon
+    /// cache, persists the mapping, and reloads the live tile. No-op when the image can't be read.</summary>
+    public void SetPinIcon(string launchPath, string imagePath)
+    {
+        string? imported = PinIconCache.Import(imagePath);
+        if (imported is null)
+            return;
+        string? previous = RecordedPinIcon(launchPath);
+        RemovePinIconEntry(launchPath); // drop a differently-cased stale key before re-adding
+        (Settings.PinIcons ??= new Dictionary<string, string>())[launchPath] = imported;
+        DeleteIfUnreferenced(previous);
+        Save();
+        ReloadPinIcon(launchPath);
+    }
+
+    /// <summary>Reverts a pinned shortcut to its extracted icon: removes the mapping and — when no
+    /// other pin shares it — the cached image file.</summary>
+    public void ResetPinIcon(string launchPath)
+    {
+        string? previous = RecordedPinIcon(launchPath);
+        if (previous is null)
+            return;
+        RemovePinIconEntry(launchPath);
+        DeleteIfUnreferenced(previous);
+        Save();
+        ReloadPinIcon(launchPath);
+    }
+
+    /// <summary>Whether the pin has a custom icon set (drives the "Reset Icon" menu item).</summary>
+    public bool HasCustomIcon(string launchPath) => RecordedPinIcon(launchPath) is not null;
+
+    /// <summary>The full path of the pin's cached custom icon, or null when the pin uses its
+    /// extracted icon (or the cached file has disappeared).</summary>
+    public string? CustomIconPathFor(string launchPath)
+        => RecordedPinIcon(launchPath) is { } file ? PinIconCache.Resolve(file) : null;
+
+    /// <summary>The cached-icon file name recorded for a launch path, if any (case-insensitive).</summary>
+    private string? RecordedPinIcon(string launchPath)
+    {
+        if (Settings.PinIcons is { } icons)
+            foreach (var kv in icons)
+                if (string.Equals(kv.Key, launchPath, StringComparison.OrdinalIgnoreCase))
+                    return kv.Value;
+        return null;
+    }
+
+    private void RemovePinIconEntry(string launchPath)
+    {
+        if (Settings.PinIcons is not { } icons)
+            return;
+        foreach (var key in icons.Keys
+                     .Where(k => string.Equals(k, launchPath, StringComparison.OrdinalIgnoreCase)).ToList())
+            icons.Remove(key);
+    }
+
+    /// <summary>Deletes a cached icon file once no pin mapping references it anymore.</summary>
+    private void DeleteIfUnreferenced(string? fileName)
+    {
+        if (fileName is null)
+            return;
+        if (Settings.PinIcons is { } icons
+            && icons.Values.Any(v => string.Equals(v, fileName, StringComparison.OrdinalIgnoreCase)))
+            return;
+        PinIconCache.Delete(fileName);
+    }
+
+    /// <summary>Re-applies the (possibly changed) custom icon to the pin's live tile (the Start
+    /// tile lives outside the app map, keyed by its sentinel path).</summary>
+    private void ReloadPinIcon(string launchPath)
+    {
+        var vm = string.Equals(launchPath, DockItem.StartLaunchPath, StringComparison.OrdinalIgnoreCase)
+            ? _startVm
+            : _appByKey.Values.FirstOrDefault(
+                a => string.Equals(a.LaunchPath, launchPath, StringComparison.OrdinalIgnoreCase));
+        if (vm is null)
+            return;
+        vm.CustomIconPath = CustomIconPathFor(launchPath);
+        _ = vm.LoadIconAsync(IconPixelSize);
     }
 
     /// <summary>Renames a pinned shortcut's display label: persists the new name and updates the live tile.</summary>

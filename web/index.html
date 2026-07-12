@@ -190,12 +190,13 @@
       <div class="feature-body reveal">
         <p class="feature-lead" data-i18n="menubar_lead">A familiar strip across the top.</p>
         <p class="feature-text" data-i18n="menubar_text">Flip on the optional menu bar and a thin, always-acrylic strip docks to the
-          top of your primary screen — Windows logo menu, the focused app's real name, a keyboard-layout
+          top of your primary screen — a macOS-style system menu, the focused app's real name, a keyboard-layout
           switcher, Quick&nbsp;Settings, Notifications, and a clock.</p>
         <!-- Mock menu bar -->
         <div class="menubar-demo reveal-soft" aria-hidden="true">
           <div class="mb-left">
-            <svg class="mb-win" viewBox="0 0 100 100"><rect x="6" y="6" width="40" height="40" rx="4"/><rect x="54" y="6" width="40" height="40" rx="4"/><rect x="6" y="54" width="40" height="40" rx="4"/><rect x="54" y="54" width="40" height="40" rx="4"/></svg>
+            <!-- Dockable's own launcher glyph (matches the app's StartGlyphGeometry — not the Windows flag) -->
+            <svg class="mb-win" viewBox="0 0 48 48"><rect x="0" y="0" width="26" height="26" rx="2"/><rect x="32" y="0" width="16" height="26" rx="2"/><rect x="0" y="32" width="26" height="16" rx="2"/><rect x="32" y="32" width="16" height="16" rx="2"/></svg>
             <span class="mb-app">Google Chrome</span>
             <span class="mb-menu" data-i18n="mb_file">File</span><span class="mb-menu" data-i18n="mb_edit">Edit</span><span class="mb-menu" data-i18n="mb_view">View</span>
           </div>

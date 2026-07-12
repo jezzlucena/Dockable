@@ -472,7 +472,9 @@ public partial class DockWindow : Window
         }
     }
 
-    private void RefreshTaskbarApps() => ViewModel?.RefreshTaskbarApps(_ownProcessId);
+    // Internal so the Preferences window's "Show Dockable Settings on the Dock" toggle can apply
+    // its pin change immediately instead of waiting on the 1 s refresh tick.
+    internal void RefreshTaskbarApps() => ViewModel?.RefreshTaskbarApps(_ownProcessId);
 
     /// <summary>If new shortcuts have been pinned to the taskbar, offer to replicate them on the dock.</summary>
     private void CheckAndPromptNewPins()
@@ -2621,13 +2623,14 @@ public partial class DockWindow : Window
             return;
 
         // Consume the right-click on the item so it doesn't fall through to the empty-space dock menu
-        // (items without their own menu — Start / Recycle Bin / minimized tiles — simply show nothing).
+        // (items without their own menu — minimized tiles — simply show nothing).
         e.Handled = true;
 
         ContextMenu? menu = item switch
         {
             { IsPreferences: true } => BuildPreferencesMenu(item),
             { IsTaskbarApp: true } => BuildAppMenu(item),
+            { IsStartMenu: true } => BuildStartTileMenu(item),
             { IsPinnedFolder: true } => BuildFolderMenu(item),
             { IsPinnedFile: true } => BuildFileMenu(item),
             { IsSeparator: true } => BuildSeparatorMenu(),
@@ -2743,19 +2746,34 @@ public partial class DockWindow : Window
         _settingsWindow?.SyncFromSettings();
     }
 
-    // Built-in Dock Preferences tile: Keep in Dock (pin toggle), and — while the window is open —
-    // Quit (closes the Preferences window only, never the dock).
+    // Start tile menu: swap the launcher glyph for a user image (kept under the Start sentinel key
+    // in PinIcons); Reset returns to the built-in vector glyph.
+    private ContextMenu BuildStartTileMenu(DockItemViewModel item)
+    {
+        var menu = new ContextMenu();
+        MenuBuilder.AddItem(menu, Loc.T("Menu_ChangeIcon"), () => ChangePinIcon(item));
+        if (ViewModel?.HasCustomIcon(item.LaunchPath) == true)
+            MenuBuilder.AddItem(menu, Loc.T("Menu_ResetIcon"), () => ViewModel?.ResetPinIcon(item.LaunchPath));
+        return menu;
+    }
+
+    // Built-in Dock Preferences tile: icon customization, Keep in Dock (pin toggle, synced with the
+    // "Show Dockable Settings on the Dock" preference), and — while the window is open — Quit
+    // (closes the Preferences window only, never the dock).
     private ContextMenu BuildPreferencesMenu(DockItemViewModel app)
     {
         var menu = new ContextMenu();
 
+        MenuBuilder.AddItem(menu, Loc.T("Menu_ChangeIcon"), () => ChangePinIcon(app));
+        if (ViewModel?.HasCustomIcon(app.LaunchPath) == true)
+            MenuBuilder.AddItem(menu, Loc.T("Menu_ResetIcon"), () => ViewModel?.ResetPinIcon(app.LaunchPath));
+        menu.Items.Add(new Separator());
+
         MenuBuilder.AddCheckable(menu, Loc.T("Menu_KeepInDock"), app.IsPinned, () =>
         {
-            if (app.IsPinned)
-                ViewModel!.UnpinApp(DockItem.PreferencesLaunchPath);
-            else
-                ViewModel!.PinApp(DockItem.PreferencesLaunchPath, int.MaxValue);
+            ViewModel!.SetShowSettingsInDock(!app.IsPinned);
             RefreshTaskbarApps();
+            _settingsWindow?.SyncFromSettings(); // keep an open Preferences toggle in step
         });
 
         if (_settingsWindow is not null)
@@ -3552,7 +3570,7 @@ public partial class DockWindow : Window
     }
 
     // Open/pinned app menu: Options ▶ (Keep in Dock / Open at Login / Show in Explorer), then — for
-    // running apps — Show All Windows and Quit (Force Quit while Alt is held).
+    // running apps — Show All Windows and Quit (Force Quit while Ctrl is held).
     private ContextMenu BuildAppMenu(DockItemViewModel app)
     {
         var menu = new ContextMenu();
@@ -3560,9 +3578,15 @@ public partial class DockWindow : Window
         // New Window: launch another instance of the app (most apps open a fresh window).
         MenuBuilder.AddItem(menu, Loc.T("Menu_NewWindow"), () => ShortcutService.Launch(app.LaunchPath));
 
-        // Rename: change a pinned shortcut's display label (persisted via PinNames).
+        // Rename / Change Icon: customize a pinned shortcut's label (PinNames) or icon (a user
+        // .png/.svg imported into the AppData icon cache, persisted via PinIcons).
         if (app.IsPinned)
+        {
             MenuBuilder.AddItem(menu, Loc.T("Menu_Rename"), () => RenamePin(app));
+            MenuBuilder.AddItem(menu, Loc.T("Menu_ChangeIcon"), () => ChangePinIcon(app));
+            if (ViewModel?.HasCustomIcon(app.LaunchPath) == true)
+                MenuBuilder.AddItem(menu, Loc.T("Menu_ResetIcon"), () => ViewModel?.ResetPinIcon(app.LaunchPath));
+        }
 
         menu.Items.Add(new Separator());
 
@@ -3599,13 +3623,13 @@ public partial class DockWindow : Window
             MenuBuilder.AddItem(menu, Loc.T("Menu_ShowAllWindows"), () => ActivateOrLaunch(app));
 
             var quit = new MenuItem();
-            SetQuitHeader(quit, AltHeld);
-            quit.Click += (_, _) => QuitApp(app, force: AltHeld);
+            SetQuitHeader(quit, CtrlHeld);
+            quit.Click += (_, _) => QuitApp(app, force: CtrlHeld);
             menu.Items.Add(quit);
 
-            // Live-toggle the Quit / Force Quit label as Alt is pressed/released with the menu open.
-            menu.PreviewKeyDown += (_, _) => SetQuitHeader(quit, AltHeld);
-            menu.PreviewKeyUp += (_, _) => SetQuitHeader(quit, AltHeld);
+            // Live-toggle the Quit / Force Quit label as Ctrl is pressed/released with the menu open.
+            menu.PreviewKeyDown += (_, _) => SetQuitHeader(quit, CtrlHeld);
+            menu.PreviewKeyUp += (_, _) => SetQuitHeader(quit, CtrlHeld);
         }
 
         return menu;
@@ -3619,7 +3643,20 @@ public partial class DockWindow : Window
             ViewModel?.RenamePin(app.LaunchPath, dialog.Value);
     }
 
-    private static bool AltHeld => (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
+    /// <summary>Prompts for a replacement image (.png/.svg) for a pinned shortcut's icon; the
+    /// picked file is imported into the AppData icon cache and applied to the live tile.</summary>
+    private void ChangePinIcon(DockItemViewModel app)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = Loc.T("Menu_ChangeIcon"),
+            Filter = $"{Loc.T("Dialog_IconImages")}|*.png;*.svg;*.svgz",
+        };
+        if (dialog.ShowDialog(this) == true)
+            ViewModel?.SetPinIcon(app.LaunchPath, dialog.FileName);
+    }
+
+    private static bool CtrlHeld => (Keyboard.Modifiers & ModifierKeys.Control) != 0;
 
     private static void SetQuitHeader(MenuItem item, bool force) => item.Header = Loc.T(force ? "Menu_ForceQuit" : "Menu_Quit");
 

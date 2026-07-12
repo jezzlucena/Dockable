@@ -788,6 +788,17 @@
                                               VerticalAlignment="Center" Click="HideOnFullscreenSwitch_Click" />
                             </Grid>
 
+                            <Border Height="1" Background="#E3E3E3" Margin="16,0,0,0" />
+
+                            <!-- Shows/hides the built-in Dock Preferences tile; synced with the
+                                 tile's "Keep in Dock" context-menu toggle. -->
+                            <Grid Height="44" Margin="16,0">
+                                <TextBlock Text="{loc:Loc Toggle_ShowSettingsInDock}" Style="{StaticResource RowLabel}" HorizontalAlignment="Left" />
+                                <ToggleButton x:Name="ShowSettingsInDockSwitch" Style="{StaticResource MacSwitch}" HorizontalAlignment="Right"
+                                              AutomationProperties.Name="{loc:Loc Toggle_ShowSettingsInDock}"
+                                              VerticalAlignment="Center" Click="ShowSettingsInDockSwitch_Click" />
+                            </Grid>
+
                         </StackPanel>
                     </Border>
 

@@ -51,11 +51,17 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// <summary>Right-click "Unpin" applies only to pinned taskbar apps.</summary>
     public bool CanUnpin => IsTaskbarApp && IsPinned;
 
-    /// <summary>True for items that show an icon/thumbnail (and a loading fallback).</summary>
+    /// <summary>True for items that show an icon/thumbnail (and a loading fallback). The Start
+    /// tile joins in only while a custom icon is loaded — otherwise it renders its vector glyph.</summary>
     public bool ShowIconArea =>
         Model.Kind is DockItemKind.Shortcut or DockItemKind.MinimizedWindow
             or DockItemKind.TaskbarApp or DockItemKind.RecycleBin
-            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile;
+            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile
+        || (IsStartMenu && Icon is not null);
+
+    /// <summary>Whether the Start tile's built-in launcher glyph shows (hidden while a user-chosen
+    /// custom icon is loaded into <see cref="Icon"/>).</summary>
+    public bool ShowStartGlyph => IsStartMenu && Icon is null;
 
     /// <summary>Native window handle for <see cref="DockItemKind.MinimizedWindow"/> tiles.</summary>
     public IntPtr Hwnd { get; set; }
@@ -70,6 +76,10 @@ public sealed partial class DockItemViewModel : ObservableObject
 
     /// <summary>What to launch when the app has no open windows (the .lnk or exe path).</summary>
     public string LaunchPath { get; set; } = string.Empty;
+
+    /// <summary>Full path of a user-chosen replacement icon (imported into the AppData icon
+    /// cache), or null to extract the icon from the target. Set by <see cref="DockViewModel"/>.</summary>
+    public string? CustomIconPath { get; set; }
 
     /// <summary>True for the built-in Dock Preferences tile (opens the dock's own window, not a shell launch).</summary>
     public bool IsPreferences => string.Equals(LaunchPath, DockItem.PreferencesLaunchPath, StringComparison.OrdinalIgnoreCase);
@@ -88,8 +98,11 @@ public sealed partial class DockItemViewModel : ObservableObject
     /// <summary>Whether a hover label should show: any titled, non-separator item.</summary>
     public bool ShowLabel => !IsSeparator && !string.IsNullOrWhiteSpace(DisplayName);
 
-    /// <summary>The loaded icon, or null until <see cref="Services.IconLoader"/> populates it.</summary>
+    /// <summary>The loaded icon, or null until <see cref="Services.IconLoader"/> populates it.
+    /// The Start tile's glyph/icon swap tracks it, hence the two extra notifications.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowIconArea))]
+    [NotifyPropertyChangedFor(nameof(ShowStartGlyph))]
     private ImageSource? _icon;
 
     /// <summary>
@@ -234,8 +247,35 @@ public sealed partial class DockItemViewModel : ObservableObject
         }
 
         if (Model.Kind is not (DockItemKind.Shortcut or DockItemKind.TaskbarApp
-            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile))
+            or DockItemKind.PinnedFolder or DockItemKind.PinnedFile or DockItemKind.StartMenu))
             return;
+
+        // A user-chosen replacement icon overrides extraction (the funnel below renders the
+        // actual .png/.svg artwork); an unreadable cached image falls through to the default.
+        if (CustomIconPath is not null)
+        {
+            var custom = await ShortcutService.LoadIconAsync(CustomIconPath, pixelSize);
+            if (custom is not null)
+            {
+                Icon = custom;
+                return;
+            }
+        }
+
+        // The Start tile has nothing to extract from: with no (loadable) custom icon it clears
+        // Icon so its built-in launcher glyph shows again (e.g. after "Reset Icon").
+        if (Model.Kind == DockItemKind.StartMenu)
+        {
+            Icon = null;
+            return;
+        }
+
+        // The Dock Preferences pseudo-app's default is the bundled glyph, not an extraction.
+        if (IsPreferences)
+        {
+            Icon = AppIcon.Preferences;
+            return;
+        }
 
         // A folder displayed as a Stack composes its top items' icons instead of the folder glyph;
         // an empty/unreadable folder falls back to the plain File Explorer folder icon below.

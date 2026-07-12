@@ -82,15 +82,15 @@
                     </Style>
                 </a11y:DockItemElement.Style>
 
-                <!-- Windows Start logo: four tiles, with a more pronounced drop shadow than the icons. -->
-                <Viewbox Visibility="{Binding IsStartMenu, Converter={StaticResource BoolToVis}}">
+                <!-- Start tile: the app's original launcher glyph (StartGlyphGeometry in App.xaml —
+                     not the trademarked Windows flag), with a more pronounced drop shadow than the
+                     icons. Hidden while the user has a custom Start icon loaded (icon area instead). -->
+                <Viewbox Visibility="{Binding ShowStartGlyph, Converter={StaticResource BoolToVis}}">
                     <Viewbox.Effect>
                         <DropShadowEffect BlurRadius="12" ShadowDepth="2" Direction="270" Opacity="0.3" Color="#000000" />
                     </Viewbox.Effect>
-                    <!-- Windows 11 logo, traced from Windows11.svg (viewBox 4875): four 2311-wide tiles
-                         with a 253-unit gap (≈5.2%) and no outer margin. Fill keeps the dock's blue. -->
                     <Path Fill="#FF50B0F0"
-                          Data="M0,0 H2311 V2310 H0 Z M2564,0 H4875 V2310 H2564 Z M0,2564 H2311 V4875 H0 Z M2564,2564 H4875 V4875 H2564 Z" />
+                          Data="{StaticResource StartGlyphGeometry}" />
                 </Viewbox>
 
                 <!-- Separator divider: a 2px line across the bar — vertical on a horizontal dock,

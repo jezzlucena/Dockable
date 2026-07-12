@@ -8,6 +8,19 @@
                 <!-- Windows 11-style context menus, applied app-wide (implicit styles). -->
                 <ResourceDictionary Source="Themes/ModernMenu.xaml" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!-- Start-tile glyph, shared by the dock's Start tile and the menu bar's logo pill.
+                 An ORIGINAL launcher mark — four ROUNDED tiles of UNEQUAL size (a bento-style
+                 tile grid, evoking the Start menu's pinned tiles). Deliberately NOT Microsoft's
+                 trademarked four-pane Windows flag, which third parties may not reproduce
+                 without a license (see Microsoft's trademark guidelines). Keep it distinct:
+                 equal sharp squares in a 2×2 grid would recreate the flag. -->
+            <GeometryGroup x:Key="StartGlyphGeometry">
+                <RectangleGeometry Rect="0,0,26,26" RadiusX="2" RadiusY="2" />
+                <RectangleGeometry Rect="32,0,16,26" RadiusX="2" RadiusY="2" />
+                <RectangleGeometry Rect="0,32,26,16" RadiusX="2" RadiusY="2" />
+                <RectangleGeometry Rect="32,32,16,16" RadiusX="2" RadiusY="2" />
+            </GeometryGroup>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

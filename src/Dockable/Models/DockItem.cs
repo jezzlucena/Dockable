@@ -10,6 +10,10 @@ public sealed class DockItem
     /// (it isn't a real file — the dock opens its own Preferences window instead of shell-launching).</summary>
     public const string PreferencesLaunchPath = "dockable://preferences";
 
+    /// <summary>Sentinel launch path for the Start tile — not launchable; it keys the tile's
+    /// custom icon (if any) in <c>DockSettings.PinIcons</c>.</summary>
+    public const string StartLaunchPath = "dockable://start";
+
     /// <summary>Stable identity, used to match persisted items to view-models.</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 

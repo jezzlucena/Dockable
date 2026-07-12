@@ -94,6 +94,7 @@ public partial class SettingsWindow : Window
         MinimizeIntoIconSwitch.IsChecked = s.MinimizeIntoIcon;
         AutoHideDockSwitch.IsChecked = s.AutoHideDock;
         HideOnFullscreenSwitch.IsChecked = s.HideOnFullscreen;
+        ShowSettingsInDockSwitch.IsChecked = s.ShowSettingsInDock;
         ShowMenuBarSwitch.IsChecked = s.ShowMenuBar;
         TaskbarCombo.SelectedIndex = (int)s.TaskbarVisibility; // Always, Auto, Never (matches combo order)
 
@@ -153,6 +154,7 @@ public partial class SettingsWindow : Window
         new("DockMenuBar", "Toggle_MinimizeIntoIcon", () => RowOf(MinimizeIntoIconSwitch), "minimize into application icon tile thumbnail"),
         new("DockMenuBar", "Toggle_AutoHideDock", () => RowOf(AutoHideDockSwitch), "automatically hide show dock autohide auto-hide hiding reveal slide"),
         new("DockMenuBar", "Toggle_HideOnFullscreen", () => RowOf(HideOnFullscreenSwitch), "hide fullscreen full screen full-screen apps games video borderless immersive"),
+        new("DockMenuBar", "Toggle_ShowSettingsInDock", () => RowOf(ShowSettingsInDockSwitch), "show dockable settings preferences dock tile pin gear keep in dock"),
         new("DockMenuBar", "Toggle_ShowMenuBar", () => RowOf(ShowMenuBarSwitch), "menu bar top bar clock keyboard battery notifications quick settings"),
         new("DockMenuBar", "Row_ShowTaskbar", () => RowOf(TaskbarCombo), "windows taskbar show hide always auto never"),
 
@@ -612,6 +614,14 @@ public partial class SettingsWindow : Window
     private void ShowMenuBarSwitch_Click(object sender, RoutedEventArgs e)
         => _setShowMenuBar(ShowMenuBarSwitch.IsChecked == true);
 
+    // Show/hide the built-in Dock Preferences tile (pin + mirrored setting via the VM); the dock
+    // refresh applies the tile change immediately instead of waiting on the 1 s tick.
+    private void ShowSettingsInDockSwitch_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.SetShowSettingsInDock(ShowSettingsInDockSwitch.IsChecked == true);
+        Application.Current.Windows.OfType<DockWindow>().FirstOrDefault()?.RefreshTaskbarApps();
+    }
+
     // --- Position on screen ---
 
     private void PositionCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -794,6 +804,7 @@ public partial class SettingsWindow : Window
         PositionCombo.SelectedIndex = (int)s.Edge;
         MinimizeCombo.SelectedIndex = (int)s.MinimizeEffect;
         AutoHideDockSwitch.IsChecked = s.AutoHideDock;
+        ShowSettingsInDockSwitch.IsChecked = s.ShowSettingsInDock; // the tile's "Keep in Dock" menu
         _initializing = false;
     }
 

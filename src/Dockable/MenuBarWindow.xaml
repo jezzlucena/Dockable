@@ -51,11 +51,11 @@
                             Height="22" CornerRadius="11" Padding="8,0"
                             Background="Transparent"
                             VerticalAlignment="Center">
-                        <!-- Windows 11 logo (same geometry as the dock's Start tile) tinted to match
-                             the menu-bar text instead of the dock's blue. -->
+                        <!-- The app's launcher glyph (same StartGlyphGeometry as the dock's Start
+                             tile) tinted to match the menu-bar text instead of the dock's blue. -->
                         <Viewbox Width="15" Height="15" VerticalAlignment="Center">
                             <Path Fill="{DynamicResource MenuTextBrush}"
-                                  Data="M0,0 H2311 V2310 H0 Z M2564,0 H4875 V2310 H2564 Z M0,2564 H2311 V4875 H0 Z M2564,2564 H4875 V4875 H2564 Z" />
+                                  Data="{StaticResource StartGlyphGeometry}" />
                         </Viewbox>
                     </Border>
                 </a11y:InvokableCell>

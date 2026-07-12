@@ -204,6 +204,9 @@ src/Dockable/
     DockLayoutEngine.cs  Fisheye magnification + live drag layout + window/bar geometry.
   Services/
     SettingsStore.cs     Atomic JSON load/save of DockSettings (%APPDATA%\Dockable\settings.json).
+    PinIconCache.cs      %APPDATA%\Dockable\icons cache for custom pin icons: a user-chosen .png/.svg
+                         is IMPORTED (content-addressed copy) so the pin survives the original moving;
+                         cached files are deleted when no pin references them anymore.
   Shell/
     ShortcutService.cs   Launch(path) via shell; RevealInExplorer; LoadIconAsync
                          (IShellItemImageFactory → 256px, alpha-correct, off UI thread, E_PENDING retry;
@@ -367,6 +370,8 @@ src/Dockable/
 | `PinnedPaths` | [] | Files/folders pinned to the right section (`PinnedPath`: path + per-folder SortBy/DisplayAs/ViewContentAs). |
 | `KnownTaskbarPins` | null | Taskbar pins already seen/offered, so only new ones prompt. |
 | `PinNames` | null | Friendly display names captured per pinned launch path. |
+| `PinIcons` | null | Custom icon per pinned launch path → file name in the `%APPDATA%\Dockable\icons` cache (`PinIconCache`); set via the pin's "Change Icon…" menu (.png/.svg picker), cleared by "Reset Icon". Also covers the Start tile (sentinel key `dockable://start` — custom icon replaces the vector glyph via `ShowStartGlyph`/`ShowIconArea`) and the Dock Preferences tile (`dockable://preferences`). |
+| `ShowSettingsInDock` | true | Show the built-in Dock Preferences tile. MIRRORS whether the Preferences pseudo-app is pinned (`PinnedApps` is the source of truth, reconciled at load); the Preferences toggle and the tile's "Keep in Dock" menu both go through `DockViewModel.SetShowSettingsInDock` and cross-sync (`SyncFromSettings` / `RefreshTaskbarApps`). |
 
 ---
 
@@ -383,7 +388,12 @@ src/Dockable/
 - **Pins are dock-owned** (`DockSettings.PinnedApps`), **seeded once** from the real taskbar order on
   first run, then owned by the dock. Drag a pin to reorder (`MovePin`); drag-and-hold-steady to remove
   (`UnpinApp`, see Live drag); drop an external Explorer file to pin (`PinApp`, via `OnDrop`);
-  right-click → Unpin (`UnpinApp`). **The Windows taskbar is never modified** — Windows blocks
+  right-click → Unpin (`UnpinApp`); a pinned shortcut's right-click also offers Rename (label →
+  `PinNames`) and **Change Icon… / Reset Icon** (a .png/.svg picked in a file dialog → imported into
+  the `PinIconCache`, mapped in `PinIcons`, applied via `DockItemViewModel.CustomIconPath` which
+  short-circuits `LoadIconAsync` before extraction; the Start tile and the Dock Preferences tile
+  offer the same Change/Reset Icon menu — Start under the `dockable://start` sentinel key, reset
+  returning to the vector glyph / bundled Preferences glyph). **The Windows taskbar is never modified** — Windows blocks
   programmatic taskbar pin/reorder (verb removed since Win10; Explorer owns the `Taskband\Favorites`
   blob), so we deliberately went dock-owned (user's choice).
 - **Seeding reads pin order** from the `HKCU\…\Explorer\Taskband` → `Favorites` REG_BINARY:
@@ -427,7 +437,8 @@ src/Dockable/
   `RefreshTaskbarApps`; icon is `AppIcon.Preferences` (the bundled `Assets\settings.png`);
   `IsRunning` tracks `DockViewModel.PreferencesOpen` (set by the dock on open/close + a refresh).
   Click → `OpenDockPreferences` (open/focus) when closed; right-click → a dedicated `BuildPreferencesMenu`
-  (Keep in Dock toggle + Quit, which closes *only* the Preferences window). The window is `Topmost`.
+  (Change/Reset Icon + Keep in Dock toggle — synced with `ShowSettingsInDock` — + Quit, which
+  closes *only* the Preferences window). The window is `Topmost`.
 - **Preferences minimizes into the dock** like any window (thumbnail tile or its own icon per
   `MinimizeIntoIcon`). The global minimize hook skips the own process, so `OpenDockPreferences`
   installs an `HwndSource` hook on the window and intercepts `SC_MINIMIZE`: it captures the window
@@ -591,7 +602,9 @@ src/Dockable/
   (independent of the dock's Glass Effect setting). **No border.** `ApplyTheme()` paints the bar with the
   dock's own bar colours at **50% transparency** (light `#80FFFFFF`, dark `#80242424`) over the blur, and
   swaps `MenuTextBrush` to contrast per the Appearance theme (dark `#F2F2F2` / light `#1D1D1F`).
-- Content: **leading** = a Windows 11 logo (same geometry as the dock's Start tile, tinted with
+- Content: **leading** = the app's launcher glyph (`StartGlyphGeometry` in App.xaml — an ORIGINAL
+  four-rounded-unequal-tiles mark, deliberately NOT the trademarked Windows flag, which third parties
+  can't reproduce without a license; same geometry as the dock's Start tile, tinted with
   `MenuTextBrush`; click → an Apple-menu-style command `ContextMenu` built fresh each open:
   About This PC (`ms-settings:about`) / System Settings (`ms-settings:`) / Microsoft Store / **Recent
   Apps** submenu (open apps grouped by exe/AUMID; pick one → `WindowControl.ActivateAll` raises all its
